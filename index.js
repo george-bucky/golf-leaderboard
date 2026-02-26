@@ -245,6 +245,7 @@ function createLayout() {
 }
 
 function updateLeaderboard() {
+  const selectedPlayerNameBeforeUpdate = getSelectedPlayerName();
   isUpdatingLeaderboard = true;
   Promise.all([
     scraper.get(url),
@@ -265,7 +266,7 @@ function updateLeaderboard() {
     });
     updateTopInfoBar();
 
-    refilter('');
+    refilter('', { preferredPlayerName: selectedPlayerNameBeforeUpdate });
   })
   .catch(() => {
     currentRefreshIntervalMillis = idleUpdateFrequencyMillis;
@@ -312,7 +313,10 @@ function getRefreshIntervalMillis(meta) {
   return meta && meta.isLive ? liveUpdateFrequencyMillis : idleUpdateFrequencyMillis;
 }
 
-function refilter(filterText) {
+function refilter(filterText, options) {
+  const opts = options || {};
+  const preferredPlayerName = opts.preferredPlayerName || getSelectedPlayerName();
+
   filteredPlayerList = _.filter(playerList, (p) => {
     // filter out placeholder rows (ex: cut line)
     const nameMatches = !!(
@@ -337,10 +341,15 @@ function refilter(filterText) {
   const header = _.keys(_.omit(filteredPlayerList[0] || {}, ['CTRY']));
   suppressSelectionEvents = true;
   table.setData({ data: tableData, headers: header });
+  const preferredIndex = findPlayerIndexByName(preferredPlayerName);
+  const selectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
+  if (filteredPlayerList.length) {
+    table.rows.select(selectedIndex);
+  }
   suppressSelectionEvents = false;
 
   if (filteredPlayerList.length) {
-    scheduleScorecardLoad(0);
+    scheduleScorecardLoad(selectedIndex);
   } else {
     scorecardBox.setContent(showActiveOnly
       ? 'No active players match this filter.'
@@ -371,6 +380,14 @@ function jumpToTopLeaderboard() {
   table.focus();
   scheduleScorecardLoad(0);
   screen.render();
+}
+
+function getSelectedPlayerName() {
+  if (!table || !table.rows || !filteredPlayerList.length) {
+    return '';
+  }
+  const selectedIndex = table.rows.selected || 0;
+  return _.get(filteredPlayerList[selectedIndex], 'PLAYER', '');
 }
 
 function handlePlayerJumpKeypress(ch, key) {
@@ -432,6 +449,20 @@ function findPlayerIndexByPrefix(normalizedPrefix, startIndex, endIndex) {
   for (let index = startIndex; index < endIndex; index += 1) {
     const playerName = _.get(filteredPlayerList[index], 'PLAYER', '');
     if (normalizeName(playerName).indexOf(normalizedPrefix) === 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function findPlayerIndexByName(playerName) {
+  if (!playerName) {
+    return -1;
+  }
+  const normalizedName = normalizeName(playerName);
+  for (let index = 0; index < filteredPlayerList.length; index += 1) {
+    const listName = _.get(filteredPlayerList[index], 'PLAYER', '');
+    if (normalizeName(listName) === normalizedName) {
       return index;
     }
   }
@@ -674,7 +705,7 @@ function buildRoundRows(round, options) {
 
 function buildRoundRowsSingleLine(round) {
   const rows = [];
-  const linescoresByHole = buildLinescoresByHole(round.linescores || []);
+  const linescoresByHole = buildLinescoresByHole(round.linescores || [], round.startTee);
   const holes = _.range(1, 19);
 
   const pars = _.map(holes, (hole) => holePar(linescoresByHole[hole]));
@@ -696,7 +727,7 @@ function buildRoundRowsSingleLine(round) {
 
 function buildRoundRowsSplit(round) {
   const rows = [];
-  const linescoresByHole = buildLinescoresByHole(round.linescores || []);
+  const linescoresByHole = buildLinescoresByHole(round.linescores || [], round.startTee);
   const frontHoles = _.range(1, 10);
   const backHoles = _.range(10, 19);
 
@@ -719,11 +750,15 @@ function buildRoundRowsSplit(round) {
   return rows;
 }
 
-function buildLinescoresByHole(linescores) {
+function buildLinescoresByHole(linescores, startTee) {
   const byHole = {};
+  const mappingMode = getPeriodMappingMode(linescores, startTee);
+  const startTeeNumber = parseInt(startTee, 10);
 
   _.forEach(linescores, (linescore) => {
-    const hole = normalizeHoleFromPeriod(linescore && linescore.period);
+    const hole = mappingMode === 'sequence'
+      ? holeFromSequencePeriod(linescore && linescore.period, startTeeNumber)
+      : normalizeHoleFromPeriod(linescore && linescore.period);
     if (!hole) {
       return;
     }
@@ -745,6 +780,41 @@ function buildLinescoresByHole(linescores) {
   });
 
   return byHole;
+}
+
+function getPeriodMappingMode(linescores, startTee) {
+  const tee = parseInt(startTee, 10);
+  if (!Number.isInteger(tee) || tee <= 1) {
+    return 'hole';
+  }
+
+  const periods = _.chain(linescores)
+    .map((linescore) => parseInt(linescore && linescore.period, 10))
+    .filter((period) => Number.isInteger(period) && period > 0)
+    .uniq()
+    .sortBy()
+    .value();
+
+  if (!periods.length) {
+    return 'hole';
+  }
+
+  // If feed gives a clean 1..N sequence for a back-nine starter,
+  // treat period as play order and offset from start tee.
+  const sequentialFromOne = _.every(periods, (period, index) => period === index + 1);
+  return sequentialFromOne ? 'sequence' : 'hole';
+}
+
+function holeFromSequencePeriod(period, startTee) {
+  const periodNumber = parseInt(period, 10);
+  if (!Number.isInteger(periodNumber) || periodNumber < 1) {
+    return null;
+  }
+  if (!Number.isInteger(startTee) || startTee < 1) {
+    return normalizeHoleFromPeriod(periodNumber);
+  }
+
+  return ((startTee - 1 + periodNumber - 1) % 18) + 1;
 }
 
 function normalizeHoleFromPeriod(period) {
@@ -958,7 +1028,7 @@ function buildTopInfoText(meta, barWidth) {
   const eventName = meta.name || 'PGA Event';
   const roundText = meta.currentRound ? `Round ${meta.currentRound}` : 'Round --';
   const locationText = meta.location || 'Location unavailable';
-  const purseText = meta.purse ? `Purse ${meta.purse}` : '';
+  const purseText = formatPurse(meta.purse);
 
   const partsWithoutPurse = [eventName, roundText, locationText];
   const partsWithPurse = purseText ? partsWithoutPurse.concat([purseText]) : partsWithoutPurse;
@@ -981,6 +1051,19 @@ function buildTopInfoText(meta, barWidth) {
   }
 
   return truncateText(text, maxChars);
+}
+
+function formatPurse(purseValue) {
+  if (!purseValue) {
+    return '';
+  }
+  if (typeof purseValue === 'string') {
+    return `Purse ${purseValue}`;
+  }
+  if (typeof purseValue === 'number' && Number.isFinite(purseValue)) {
+    return `Purse $${purseValue.toLocaleString('en-US')}`;
+  }
+  return '';
 }
 
 function truncateText(text, maxChars) {
@@ -1037,7 +1120,10 @@ function fetchLeaderboardMeta() {
       const country = _.get(hostCourse, 'addy.country', '');
       const cityState = [city, state].filter(Boolean).join(', ');
       const location = cityState || [city, country].filter(Boolean).join(', ') || _.get(hostCourse, 'nm', '');
-      const purse = _.get(leaderboard, 'hdr.event.displayPurse', '');
+      const purse = _.get(leaderboard, 'hdr.evnt.dspPrse')
+        || _.get(leaderboard, 'hdr.evnt.prse')
+        || _.get(leaderboard, 'hdr.event.displayPurse')
+        || '';
 
       const competitors = leaderboard.competitors || [];
       const competitorMap = _.reduce(competitors, (memo, competitor) => {
