@@ -66,9 +66,12 @@ const STAT_LABEL_OVERRIDES = {
 let screen;
 let grid;
 let table;
-let filterInput;
+let topInfoBar;
 let scorecardBox;
 let detailBox;
+let detailHeaderBox;
+let detailContentBox;
+let shortcutBar;
 let playerList = [];
 let filteredPlayerList = [];
 let leaderboardMeta = null;
@@ -77,6 +80,7 @@ let suppressSelectionEvents = false;
 let playerJumpBuffer = '';
 let playerJumpTimeout = null;
 let detailViewOpen = false;
+let showActiveOnly = false;
 let refreshTimer = null;
 let isUpdatingLeaderboard = false;
 let refreshRequestedWhileUpdating = false;
@@ -87,7 +91,7 @@ init();
 
 function init() {
   screen = blessed.screen({ smartCSR: true, log: `${__dirname}/leaderboard.log` });
-  grid = new contrib.grid({ rows: 10, cols: 12, screen: screen });
+  grid = new contrib.grid({ rows: 11, cols: 12, screen: screen });
 
   // ctrl-c quits, esc jumps to top of leaderboard.
   screen.key(['C-c'], () => process.exit(0));
@@ -100,8 +104,17 @@ function init() {
   screen.key(['r', 'R'], () => {
     requestLeaderboardUpdate();
   });
+  screen.key(['/'], () => {
+    if (detailViewOpen) {
+      return;
+    }
+    toggleActiveOnlyFilter();
+  });
 
   createLayout();
+  screen.on('resize', () => {
+    updateTopInfoBar();
+  });
   requestLeaderboardUpdate();
 }
 
@@ -125,11 +138,12 @@ function createLayout() {
   table.options.columnWidth[1] = 24; // player column (post-tournament)
   table.options.columnWidth[2] = 24; // player column (live tournament)
 
-  filterInput = grid.set(0, 0, 1, 8, blessed.textbox, {
-    mouse: true,
-    padding: { top: 1, left: 3 },
-    style: { fg: 'green', focus: { fg: 'green', bg: '#333' } },
-    inputOnFocus: true
+  topInfoBar = grid.set(0, 0, 1, 8, blessed.box, {
+    tags: true,
+    border: { type: 'line', fg: 'cyan' },
+    style: { fg: 'white', border: { fg: 'cyan' } },
+    padding: { left: 1, right: 1 },
+    content: 'Loading event info...'
   });
 
   scorecardBox = grid.set(0, 8, 10, 4, blessed.box, {
@@ -151,25 +165,56 @@ function createLayout() {
     top: 0,
     left: 0,
     width: '100%',
-    height: '100%',
+    bottom: 1,
     tags: true,
     mouse: true,
     keys: true,
     vi: true,
-    scrollable: true,
-    alwaysScroll: true,
     hidden: true,
     border: { type: 'line', fg: 'cyan' },
     style: { fg: 'white', border: { fg: 'cyan' } },
-    padding: { top: 1, left: 2, right: 2, bottom: 1 },
+    padding: { top: 0, left: 0, right: 0, bottom: 0 },
     label: ' Player Detail '
   });
 
-  detailBox.key(['l', 'L'], () => closeDetailView());
+  detailHeaderBox = blessed.box({
+    parent: detailBox,
+    top: 0,
+    left: 1,
+    right: 1,
+    height: 5,
+    tags: true,
+    keys: true,
+    vi: true,
+    style: { fg: 'white' },
+    content: ''
+  });
 
-  filterInput.on('keypress', (key) => {
-    // wait one tick so text input value is up-to-date
-    setTimeout(() => refilter(filterInput.getValue()), 0);
+  detailContentBox = blessed.box({
+    parent: detailBox,
+    top: 5,
+    left: 1,
+    right: 1,
+    bottom: 0,
+    tags: true,
+    keys: true,
+    vi: true,
+    scrollable: true,
+    alwaysScroll: true,
+    style: { fg: 'white' },
+    content: ''
+  });
+
+  detailBox.key(['l', 'L'], () => closeDetailView());
+  detailHeaderBox.key(['l', 'L'], () => closeDetailView());
+  detailContentBox.key(['l', 'L'], () => closeDetailView());
+
+  shortcutBar = grid.set(10, 0, 1, 12, blessed.box, {
+    tags: true,
+    border: { type: 'line', fg: 'gray' },
+    style: { fg: 'white', border: { fg: 'gray' } },
+    padding: { left: 1, right: 1 },
+    content: ''
   });
 
   table.on('click', () => table.focus());
@@ -194,7 +239,8 @@ function createLayout() {
   // Type-to-jump search when leaderboard table is focused.
   table.rows.on('keypress', (ch, key) => handlePlayerJumpKeypress(ch, key));
 
-  filterInput.focus();
+  updateShortcutBar();
+  table.focus();
   screen.render();
 }
 
@@ -217,13 +263,16 @@ function updateLeaderboard() {
       text: `Last updated: ${now.getHours()}:${now.getMinutes() < 10 ? 0 : ''}${now.getMinutes()} (${liveStatusText}, refresh ${refreshFrequencyMins}m)`,
       side: 'right'
     });
+    updateTopInfoBar();
 
-    // keep current filter text on auto refresh
-    refilter(filterInput.getValue() || '');
+    refilter('');
   })
   .catch(() => {
     currentRefreshIntervalMillis = idleUpdateFrequencyMillis;
     scorecardBox.setContent('Unable to refresh leaderboard right now.');
+    if (topInfoBar) {
+      topInfoBar.setContent('Unable to load event info.');
+    }
     screen.render();
   })
   .finally(() => {
@@ -266,11 +315,18 @@ function getRefreshIntervalMillis(meta) {
 function refilter(filterText) {
   filteredPlayerList = _.filter(playerList, (p) => {
     // filter out placeholder rows (ex: cut line)
-    return !!(
+    const nameMatches = !!(
       p &&
       p.PLAYER &&
       p.PLAYER.toUpperCase().indexOf((filterText || '').toUpperCase()) !== -1
     );
+    if (!nameMatches) {
+      return false;
+    }
+    if (!showActiveOnly) {
+      return true;
+    }
+    return isPlayerActive(p);
   });
 
   const tableData = _.map(filteredPlayerList, (p) => {
@@ -282,6 +338,15 @@ function refilter(filterText) {
   suppressSelectionEvents = true;
   table.setData({ data: tableData, headers: header });
   suppressSelectionEvents = false;
+
+  if (filteredPlayerList.length) {
+    scheduleScorecardLoad(0);
+  } else {
+    scorecardBox.setContent(showActiveOnly
+      ? 'No active players match this filter.'
+      : 'No players match this filter.');
+  }
+
   screen.render();
 }
 
@@ -417,12 +482,18 @@ function openDetailView(index) {
 
   const competitor = findCompetitorByName(selected.PLAYER);
   if (!competitor || !competitor.id || !leaderboardMeta) {
-    showDetailContent(`No detail data found for ${selected.PLAYER}.`);
+    showDetailContent({
+      header: buildDetailHeader(selected),
+      body: `No detail data found for ${selected.PLAYER}.`
+    });
     return;
   }
 
   const cacheKey = `${leaderboardMeta.id}:${competitor.id}`;
-  showDetailContent(`Loading full detail for ${selected.PLAYER}...`);
+  showDetailContent({
+    header: buildDetailHeader(selected),
+    body: `Loading full detail for ${selected.PLAYER}...`
+  });
 
   if (scorecardCache[cacheKey]) {
     showDetailContent(formatFullScreenDetail(selected, scorecardCache[cacheKey]));
@@ -435,14 +506,19 @@ function openDetailView(index) {
       showDetailContent(formatFullScreenDetail(selected, summary));
     })
     .catch(() => {
-      showDetailContent(`Unable to load full detail for ${selected.PLAYER}.`);
+      showDetailContent({
+        header: buildDetailHeader(selected),
+        body: `Unable to load full detail for ${selected.PLAYER}.`
+      });
     });
 }
 
 function showDetailContent(content) {
   openDetailOverlay();
-  detailBox.setContent(content);
-  detailBox.setScroll(0);
+  const payload = _.isObject(content) ? content : { header: '', body: `${content}` };
+  detailHeaderBox.setContent(payload.header || '');
+  detailContentBox.setContent(payload.body || '');
+  detailContentBox.setScroll(0);
   screen.render();
 }
 
@@ -451,11 +527,12 @@ function openDetailOverlay() {
     return;
   }
   detailViewOpen = true;
-  filterInput.hide();
+  topInfoBar.hide();
   table.hide();
   scorecardBox.hide();
   detailBox.show();
-  detailBox.focus();
+  updateShortcutBar();
+  detailContentBox.focus();
 }
 
 function closeDetailView() {
@@ -464,11 +541,30 @@ function closeDetailView() {
   }
   detailViewOpen = false;
   detailBox.hide();
-  filterInput.show();
+  topInfoBar.show();
   table.show();
   scorecardBox.show();
+  updateShortcutBar();
   table.focus();
   screen.render();
+}
+
+function updateShortcutBar() {
+  if (!shortcutBar) {
+    return;
+  }
+
+  const activeState = showActiveOnly ? 'ON' : 'OFF';
+  const mainShortcuts = `{bold}Esc{/bold}:Top  {bold}R{/bold}:Refresh  {bold}/{/bold}:Active ${activeState}  {bold}Enter{/bold}:Player Detail  {bold}A-Z{/bold}:Jump Search  {bold}C-c{/bold}:Quit`;
+  const detailShortcuts = '{bold}L{/bold}:Back to Leaderboard  {bold}Esc{/bold}:Back + Top  {bold}C-c{/bold}:Quit';
+
+  shortcutBar.setContent(detailViewOpen ? detailShortcuts : mainShortcuts);
+}
+
+function toggleActiveOnlyFilter() {
+  showActiveOnly = !showActiveOnly;
+  updateShortcutBar();
+  refilter('');
 }
 
 function formatCompactScorecard(player, summary) {
@@ -487,7 +583,7 @@ function formatCompactScorecard(player, summary) {
   const currentRound = getCurrentRound(rounds);
   lines.push('{bold}Current Round{/bold}');
   lines.push(formatRoundHeader(currentRound));
-  lines.push(...buildRoundRows(currentRound));
+  lines.push(...buildRoundRows(currentRound, { singleRow: false }));
   lines.push('');
 
   lines.push(buildLegendLine());
@@ -496,22 +592,22 @@ function formatCompactScorecard(player, summary) {
   return lines.join('\n');
 }
 
-function formatDetailedScorecard(player, summary) {
+function formatDetailedScorecard(summary, layout) {
+  const detailLayout = layout || {};
+  const useSingleRow = !!detailLayout.singleRowScorecard;
+  const roundDividerWidth = Math.min(Math.max(52, detailLayout.renderWidth || 52), 120);
   const rounds = _.sortBy(summary.rounds || [], (round) => round.period);
   const lines = [];
 
-  lines.push(`${player.PLAYER}`);
-  lines.push(`POS: ${player.POS || '--'}   SCORE: ${player.SCORE || '--'}   THRU: ${player.THRU || '--'}`);
-  lines.push('');
   lines.push('{bold}All Rounds{/bold}');
 
   if (!rounds.length) {
     lines.push('No round-by-round scorecard available yet.');
   } else {
     _.forEach(rounds, (round) => {
-      lines.push(buildDivider(52));
+      lines.push(buildDivider(roundDividerWidth));
       lines.push(formatRoundHeader(round));
-      lines.push(...buildRoundRows(round));
+      lines.push(...buildRoundRows(round, { singleRow: useSingleRow }));
       lines.push('');
     });
   }
@@ -524,10 +620,25 @@ function formatDetailedScorecard(player, summary) {
 }
 
 function formatFullScreenDetail(player, summary) {
+  const renderWidth = getDetailRenderWidth();
+  const singleRowScorecard = shouldUseSingleRowDetailScorecard(renderWidth);
+  return {
+    header: buildDetailHeader(player, renderWidth),
+    body: formatDetailedScorecard(summary, {
+      singleRowScorecard: singleRowScorecard,
+      renderWidth: renderWidth
+    })
+  };
+}
+
+function buildDetailHeader(player, renderWidth) {
+  const dividerWidth = Math.min(Math.max(60, renderWidth || 80), 120);
   const lines = [];
   lines.push('{bold}Player Event Detail{/bold}   {gray-fg}Press L to return to leaderboard{/gray-fg}');
-  lines.push(buildDivider(80));
-  lines.push(formatDetailedScorecard(player, summary));
+  lines.push(buildDivider(dividerWidth));
+  lines.push(`${player.PLAYER}`);
+  lines.push(`POS: ${player.POS || '--'}   SCORE: ${player.SCORE || '--'}   THRU: ${player.THRU || '--'}`);
+  lines.push(buildDivider(dividerWidth));
   return lines.join('\n');
 }
 
@@ -554,9 +665,38 @@ function formatRoundHeader(round) {
   return `{bold}Round ${round.period}{/bold}  Score: ${round.displayValue || '--'}  Out: ${round.outScore || '--'}  In: ${round.inScore || '--'}`;
 }
 
-function buildRoundRows(round) {
+function buildRoundRows(round, options) {
+  if (options && options.singleRow) {
+    return buildRoundRowsSingleLine(round);
+  }
+  return buildRoundRowsSplit(round);
+}
+
+function buildRoundRowsSingleLine(round) {
   const rows = [];
-  const linescoresByHole = _.keyBy(round.linescores || [], 'period');
+  const linescoresByHole = buildLinescoresByHole(round.linescores || []);
+  const holes = _.range(1, 19);
+
+  const pars = _.map(holes, (hole) => holePar(linescoresByHole[hole]));
+  const scores = _.map(holes, (hole) => holeScore(linescoresByHole[hole]));
+
+  const parOut = sumPars(pars.slice(0, 9));
+  const parIn = sumPars(pars.slice(9));
+  const parTot = sumPars([parOut, parIn]);
+
+  rows.push(buildTextRow('HOLE', holes.concat(['OUT', 'IN', 'TOT'])));
+  rows.push(buildTextRow('PAR', pars.concat([parOut, parIn, parTot])));
+  rows.push(buildScoreRow(
+    'SCR',
+    holes.map((hole) => linescoresByHole[hole]).concat([null, null, null]),
+    scores.concat([round.outScore || '--', round.inScore || '--', round.displayValue || '--'])
+  ));
+  return rows;
+}
+
+function buildRoundRowsSplit(round) {
+  const rows = [];
+  const linescoresByHole = buildLinescoresByHole(round.linescores || []);
   const frontHoles = _.range(1, 10);
   const backHoles = _.range(10, 19);
 
@@ -577,6 +717,53 @@ function buildRoundRows(round) {
   rows.push(buildTextRow('PAR', backPars.concat([parIn, parTot])));
   rows.push(buildScoreRow('SCR', backHoles.map((hole) => linescoresByHole[hole]).concat([null, null]), backScores.concat([round.inScore || '--', round.displayValue || '--'])));
   return rows;
+}
+
+function buildLinescoresByHole(linescores) {
+  const byHole = {};
+
+  _.forEach(linescores, (linescore) => {
+    const hole = normalizeHoleFromPeriod(linescore && linescore.period);
+    if (!hole) {
+      return;
+    }
+
+    const current = byHole[hole];
+    if (!current) {
+      byHole[hole] = linescore;
+      return;
+    }
+
+    // Prefer direct 1-18 periods over wrapped 19+ if both exist.
+    const currentPeriod = parseInt(current.period, 10);
+    const nextPeriod = parseInt(linescore.period, 10);
+    const currentIsWrapped = Number.isInteger(currentPeriod) && currentPeriod > 18;
+    const nextIsDirect = Number.isInteger(nextPeriod) && nextPeriod <= 18;
+    if (currentIsWrapped && nextIsDirect) {
+      byHole[hole] = linescore;
+    }
+  });
+
+  return byHole;
+}
+
+function normalizeHoleFromPeriod(period) {
+  const numericPeriod = parseInt(period, 10);
+  if (!Number.isInteger(numericPeriod) || numericPeriod < 1) {
+    return null;
+  }
+  return ((numericPeriod - 1) % 18) + 1;
+}
+
+function shouldUseSingleRowDetailScorecard(renderWidth) {
+  const width = renderWidth || getDetailRenderWidth();
+  const minSingleRowWidth = SCORECARD_LABEL_WIDTH + (21 * SCORECARD_CELL_WIDTH);
+  return width >= minSingleRowWidth;
+}
+
+function getDetailRenderWidth() {
+  const width = screen && typeof screen.width === 'number' ? screen.width : 120;
+  return Math.max(40, width - 6);
 }
 
 function buildStatsRows(stats) {
@@ -755,6 +942,72 @@ function findCompetitorByName(playerName) {
   return leaderboardMeta.competitorMap[normalizeName(playerName)] || null;
 }
 
+function updateTopInfoBar() {
+  if (!topInfoBar) {
+    return;
+  }
+  if (!leaderboardMeta) {
+    topInfoBar.setContent('Loading event info...');
+    return;
+  }
+  const width = topInfoBar.width && Number(topInfoBar.width) > 0 ? Number(topInfoBar.width) : 80;
+  topInfoBar.setContent(buildTopInfoText(leaderboardMeta, width));
+}
+
+function buildTopInfoText(meta, barWidth) {
+  const eventName = meta.name || 'PGA Event';
+  const roundText = meta.currentRound ? `Round ${meta.currentRound}` : 'Round --';
+  const locationText = meta.location || 'Location unavailable';
+  const purseText = meta.purse ? `Purse ${meta.purse}` : '';
+
+  const partsWithoutPurse = [eventName, roundText, locationText];
+  const partsWithPurse = purseText ? partsWithoutPurse.concat([purseText]) : partsWithoutPurse;
+
+  const maxChars = Math.max(24, barWidth - 4);
+  let text = partsWithPurse.join('  |  ');
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  text = partsWithoutPurse.join('  |  ');
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  const compactLocation = meta.cityState || locationText;
+  text = [eventName, roundText, compactLocation].join('  |  ');
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  return truncateText(text, maxChars);
+}
+
+function truncateText(text, maxChars) {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  if (maxChars <= 3) {
+    return text.slice(0, maxChars);
+  }
+  return `${text.slice(0, maxChars - 3)}...`;
+}
+
+function isPlayerActive(playerRow) {
+  const competitor = findCompetitorByName(playerRow && playerRow.PLAYER);
+  const status = _.toLower(competitor && competitor.status);
+  if (status === 'in' || status === 'live') {
+    return true;
+  }
+
+  const thru = `${_.get(playerRow, 'THRU', '')}`.trim();
+  if (/^\d+$/.test(thru)) {
+    return true;
+  }
+
+  return false;
+}
+
 function normalizeName(name) {
   return (name || '')
     .toUpperCase()
@@ -777,6 +1030,14 @@ function fetchLeaderboardMeta() {
       if (!leaderboard) {
         return null;
       }
+      const courses = leaderboard.courses || {};
+      const hostCourse = _.find(_.values(courses), (course) => course && course.host) || _.first(_.values(courses));
+      const city = _.get(hostCourse, 'addy.city', '');
+      const state = _.get(hostCourse, 'addy.state', '');
+      const country = _.get(hostCourse, 'addy.country', '');
+      const cityState = [city, state].filter(Boolean).join(', ');
+      const location = cityState || [city, country].filter(Boolean).join(', ') || _.get(hostCourse, 'nm', '');
+      const purse = _.get(leaderboard, 'hdr.event.displayPurse', '');
 
       const competitors = leaderboard.competitors || [];
       const competitorMap = _.reduce(competitors, (memo, competitor) => {
@@ -787,6 +1048,11 @@ function fetchLeaderboardMeta() {
       return {
         id: leaderboard.id,
         tour: leaderboard.tour || 'pga',
+        name: leaderboard.name || _.get(leaderboard, 'hdr.event.name', ''),
+        currentRound: leaderboard.currentRound,
+        location: location,
+        cityState: cityState,
+        purse: purse,
         isLive: isLeaderboardLive(leaderboard),
         competitorMap: competitorMap
       };
