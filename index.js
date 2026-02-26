@@ -24,6 +24,7 @@ let grid;
 let table;
 let filterInput;
 let scorecardBox;
+let detailBox;
 let playerList = [];
 let filteredPlayerList = [];
 let leaderboardMeta = null;
@@ -31,6 +32,7 @@ let scorecardSelectionTimeout = null;
 let suppressSelectionEvents = false;
 let playerJumpBuffer = '';
 let playerJumpTimeout = null;
+let detailViewOpen = false;
 const scorecardCache = {};
 const playerJumpResetMillis = 1200;
 init();
@@ -39,8 +41,14 @@ function init() {
   screen = blessed.screen({ smartCSR: true, log: `${__dirname}/leaderboard.log` });
   grid = new contrib.grid({ rows: 10, cols: 12, screen: screen });
 
-  // quit on esc or ctrl-c.
-  screen.key(['escape', 'C-c'], (ch, key) => process.exit(0));
+  // ctrl-c quits, esc jumps to top of leaderboard.
+  screen.key(['C-c'], () => process.exit(0));
+  screen.key(['escape'], () => {
+    if (detailViewOpen) {
+      closeDetailView();
+    }
+    jumpToTopLeaderboard();
+  });
 
   createLayout();
   updateLeaderboard();
@@ -88,6 +96,27 @@ function createLayout() {
     content: 'Select a player (arrow keys or mouse) to load scorecard.'
   });
 
+  detailBox = blessed.box({
+    parent: screen,
+    top: 0,
+    left: 0,
+    width: '100%',
+    height: '100%',
+    tags: true,
+    mouse: true,
+    keys: true,
+    vi: true,
+    scrollable: true,
+    alwaysScroll: true,
+    hidden: true,
+    border: { type: 'line', fg: 'cyan' },
+    style: { fg: 'white', border: { fg: 'cyan' } },
+    padding: { top: 1, left: 2, right: 2, bottom: 1 },
+    label: ' Player Detail '
+  });
+
+  detailBox.key(['l', 'L'], () => closeDetailView());
+
   filterInput.on('keypress', (key) => {
     // wait one tick so text input value is up-to-date
     setTimeout(() => refilter(filterInput.getValue()), 0);
@@ -100,17 +129,16 @@ function createLayout() {
     if (suppressSelectionEvents) {
       return;
     }
-    // moving selection returns to compact "current round" mode
-    scheduleScorecardLoad(index, false);
+    scheduleScorecardLoad(index);
   });
 
-  // Load immediately on enter/double-click style actions.
+  // Enter opens full screen detail for selected player.
   table.rows.on('action', (item, index) => {
     if (scorecardSelectionTimeout) {
       clearTimeout(scorecardSelectionTimeout);
       scorecardSelectionTimeout = null;
     }
-    showScorecard(index, true);
+    openDetailView(index);
   });
 
   // Type-to-jump search when leaderboard table is focused.
@@ -167,11 +195,27 @@ function refilter(filterText) {
   screen.render();
 }
 
-function scheduleScorecardLoad(index, detailed) {
+function scheduleScorecardLoad(index) {
   if (scorecardSelectionTimeout) {
     clearTimeout(scorecardSelectionTimeout);
   }
-  scorecardSelectionTimeout = setTimeout(() => showScorecard(index, detailed), 200);
+  scorecardSelectionTimeout = setTimeout(() => showScorecard(index), 200);
+}
+
+function jumpToTopLeaderboard() {
+  if (!filteredPlayerList.length) {
+    return;
+  }
+
+  if (scorecardSelectionTimeout) {
+    clearTimeout(scorecardSelectionTimeout);
+    scorecardSelectionTimeout = null;
+  }
+
+  table.rows.select(0);
+  table.focus();
+  scheduleScorecardLoad(0);
+  screen.render();
 }
 
 function handlePlayerJumpKeypress(ch, key) {
@@ -239,7 +283,7 @@ function findPlayerIndexByPrefix(normalizedPrefix, startIndex, endIndex) {
   return -1;
 }
 
-function showScorecard(index, detailed) {
+function showScorecard(index) {
   const selected = filteredPlayerList[index];
   if (!selected || !selected.PLAYER) {
     return;
@@ -253,12 +297,9 @@ function showScorecard(index, detailed) {
   }
 
   const cacheKey = `${leaderboardMeta.id}:${competitor.id}`;
-  const shouldShowDetailed = !!detailed;
 
   if (scorecardCache[cacheKey]) {
-    scorecardBox.setContent(
-      formatScorecard(selected, scorecardCache[cacheKey], shouldShowDetailed)
-    );
+    scorecardBox.setContent(formatCompactScorecard(selected, scorecardCache[cacheKey]));
     screen.render();
     return;
   }
@@ -269,7 +310,7 @@ function showScorecard(index, detailed) {
   fetchCompetitorSummary(leaderboardMeta.tour, leaderboardMeta.id, competitor.id)
     .then((summary) => {
       scorecardCache[cacheKey] = summary;
-      scorecardBox.setContent(formatScorecard(selected, summary, shouldShowDetailed));
+      scorecardBox.setContent(formatCompactScorecard(selected, summary));
       screen.render();
     })
     .catch(() => {
@@ -278,11 +319,65 @@ function showScorecard(index, detailed) {
     });
 }
 
-function formatScorecard(player, summary, detailed) {
-  if (detailed) {
-    return formatDetailedScorecard(player, summary);
+function openDetailView(index) {
+  const selected = filteredPlayerList[index];
+  if (!selected || !selected.PLAYER) {
+    return;
   }
-  return formatCompactScorecard(player, summary);
+
+  const competitor = findCompetitorByName(selected.PLAYER);
+  if (!competitor || !competitor.id || !leaderboardMeta) {
+    showDetailContent(`No detail data found for ${selected.PLAYER}.`);
+    return;
+  }
+
+  const cacheKey = `${leaderboardMeta.id}:${competitor.id}`;
+  showDetailContent(`Loading full detail for ${selected.PLAYER}...`);
+
+  if (scorecardCache[cacheKey]) {
+    showDetailContent(formatFullScreenDetail(selected, scorecardCache[cacheKey]));
+    return;
+  }
+
+  fetchCompetitorSummary(leaderboardMeta.tour, leaderboardMeta.id, competitor.id)
+    .then((summary) => {
+      scorecardCache[cacheKey] = summary;
+      showDetailContent(formatFullScreenDetail(selected, summary));
+    })
+    .catch(() => {
+      showDetailContent(`Unable to load full detail for ${selected.PLAYER}.`);
+    });
+}
+
+function showDetailContent(content) {
+  openDetailOverlay();
+  detailBox.setContent(content);
+  screen.render();
+}
+
+function openDetailOverlay() {
+  if (detailViewOpen) {
+    return;
+  }
+  detailViewOpen = true;
+  filterInput.hide();
+  table.hide();
+  scorecardBox.hide();
+  detailBox.show();
+  detailBox.focus();
+}
+
+function closeDetailView() {
+  if (!detailViewOpen) {
+    return;
+  }
+  detailViewOpen = false;
+  detailBox.hide();
+  filterInput.show();
+  table.show();
+  scorecardBox.show();
+  table.focus();
+  screen.render();
 }
 
 function formatCompactScorecard(player, summary) {
@@ -306,7 +401,7 @@ function formatCompactScorecard(player, summary) {
 
   lines.push(buildLegendLine());
   lines.push('');
-  lines.push('{gray-fg}Press Enter for full rounds + event stats{/gray-fg}');
+  lines.push('{gray-fg}Press Enter for full-screen rounds + event stats{/gray-fg}');
   return lines.join('\n');
 }
 
@@ -334,6 +429,14 @@ function formatDetailedScorecard(player, summary) {
   lines.push('');
   lines.push('{bold}Event Stats{/bold}');
   lines.push(...buildStatsRows(summary.stats || []));
+  return lines.join('\n');
+}
+
+function formatFullScreenDetail(player, summary) {
+  const lines = [];
+  lines.push('{bold}Player Event Detail{/bold}   {gray-fg}Press L to return to leaderboard{/gray-fg}');
+  lines.push(buildDivider(80));
+  lines.push(formatDetailedScorecard(player, summary));
   return lines.join('\n');
 }
 
