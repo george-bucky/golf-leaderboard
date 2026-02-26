@@ -29,7 +29,10 @@ let filteredPlayerList = [];
 let leaderboardMeta = null;
 let scorecardSelectionTimeout = null;
 let suppressSelectionEvents = false;
+let playerJumpBuffer = '';
+let playerJumpTimeout = null;
 const scorecardCache = {};
+const playerJumpResetMillis = 1200;
 init();
 
 function init() {
@@ -97,11 +100,21 @@ function createLayout() {
     if (suppressSelectionEvents) {
       return;
     }
-    scheduleScorecardLoad(index);
+    // moving selection returns to compact "current round" mode
+    scheduleScorecardLoad(index, false);
   });
 
   // Load immediately on enter/double-click style actions.
-  table.rows.on('action', (item, index) => showScorecard(index));
+  table.rows.on('action', (item, index) => {
+    if (scorecardSelectionTimeout) {
+      clearTimeout(scorecardSelectionTimeout);
+      scorecardSelectionTimeout = null;
+    }
+    showScorecard(index, true);
+  });
+
+  // Type-to-jump search when leaderboard table is focused.
+  table.rows.on('keypress', (ch, key) => handlePlayerJumpKeypress(ch, key));
 
   filterInput.focus();
   screen.render();
@@ -154,14 +167,79 @@ function refilter(filterText) {
   screen.render();
 }
 
-function scheduleScorecardLoad(index) {
+function scheduleScorecardLoad(index, detailed) {
   if (scorecardSelectionTimeout) {
     clearTimeout(scorecardSelectionTimeout);
   }
-  scorecardSelectionTimeout = setTimeout(() => showScorecard(index), 200);
+  scorecardSelectionTimeout = setTimeout(() => showScorecard(index, detailed), 200);
 }
 
-function showScorecard(index) {
+function handlePlayerJumpKeypress(ch, key) {
+  if (!filteredPlayerList.length || screen.focused !== table.rows) {
+    return;
+  }
+
+  if (key && (key.name === 'backspace' || key.name === 'delete')) {
+    playerJumpBuffer = playerJumpBuffer.slice(0, -1);
+    jumpToPlayerByPrefix(playerJumpBuffer);
+    resetPlayerJumpTimer();
+    return;
+  }
+
+  // Only capture normal typing characters.
+  if (!ch || !/^[a-zA-Z '\.-]$/.test(ch)) {
+    return;
+  }
+
+  playerJumpBuffer += ch;
+  jumpToPlayerByPrefix(playerJumpBuffer);
+  resetPlayerJumpTimer();
+}
+
+function resetPlayerJumpTimer() {
+  if (playerJumpTimeout) {
+    clearTimeout(playerJumpTimeout);
+  }
+  playerJumpTimeout = setTimeout(() => {
+    playerJumpBuffer = '';
+    playerJumpTimeout = null;
+  }, playerJumpResetMillis);
+}
+
+function jumpToPlayerByPrefix(prefix) {
+  if (!prefix) {
+    return;
+  }
+
+  const normalizedPrefix = normalizeName(prefix);
+  const currentIndex = table.rows.selected || 0;
+
+  // Start search after current row, then wrap to top.
+  let targetIndex = findPlayerIndexByPrefix(normalizedPrefix, currentIndex + 1, filteredPlayerList.length);
+  if (targetIndex === -1) {
+    targetIndex = findPlayerIndexByPrefix(normalizedPrefix, 0, currentIndex + 1);
+  }
+
+  if (targetIndex === -1) {
+    return;
+  }
+
+  table.rows.select(targetIndex);
+  scheduleScorecardLoad(targetIndex);
+  screen.render();
+}
+
+function findPlayerIndexByPrefix(normalizedPrefix, startIndex, endIndex) {
+  for (let index = startIndex; index < endIndex; index += 1) {
+    const playerName = _.get(filteredPlayerList[index], 'PLAYER', '');
+    if (normalizeName(playerName).indexOf(normalizedPrefix) === 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function showScorecard(index, detailed) {
   const selected = filteredPlayerList[index];
   if (!selected || !selected.PLAYER) {
     return;
@@ -175,8 +253,12 @@ function showScorecard(index) {
   }
 
   const cacheKey = `${leaderboardMeta.id}:${competitor.id}`;
+  const shouldShowDetailed = !!detailed;
+
   if (scorecardCache[cacheKey]) {
-    scorecardBox.setContent(formatScorecard(selected, scorecardCache[cacheKey]));
+    scorecardBox.setContent(
+      formatScorecard(selected, scorecardCache[cacheKey], shouldShowDetailed)
+    );
     screen.render();
     return;
   }
@@ -187,7 +269,7 @@ function showScorecard(index) {
   fetchCompetitorSummary(leaderboardMeta.tour, leaderboardMeta.id, competitor.id)
     .then((summary) => {
       scorecardCache[cacheKey] = summary;
-      scorecardBox.setContent(formatScorecard(selected, summary));
+      scorecardBox.setContent(formatScorecard(selected, summary, shouldShowDetailed));
       screen.render();
     })
     .catch(() => {
@@ -196,7 +278,14 @@ function showScorecard(index) {
     });
 }
 
-function formatScorecard(player, summary) {
+function formatScorecard(player, summary, detailed) {
+  if (detailed) {
+    return formatDetailedScorecard(player, summary);
+  }
+  return formatCompactScorecard(player, summary);
+}
+
+function formatCompactScorecard(player, summary) {
   const rounds = _.sortBy(summary.rounds || [], (round) => round.period);
   const lines = [];
 
@@ -209,33 +298,42 @@ function formatScorecard(player, summary) {
     return lines.join('\n');
   }
 
-  _.forEach(rounds, (round) => {
-    const linescoresByHole = _.keyBy(round.linescores || [], 'period');
-    const frontHoles = _.range(1, 10);
-    const backHoles = _.range(10, 19);
-
-    const frontPars = _.map(frontHoles, (hole) => holePar(linescoresByHole[hole]));
-    const backPars = _.map(backHoles, (hole) => holePar(linescoresByHole[hole]));
-    const frontScores = _.map(frontHoles, (hole) => holeScore(linescoresByHole[hole]));
-    const backScores = _.map(backHoles, (hole) => holeScore(linescoresByHole[hole]));
-
-    const parOut = sumPars(frontPars);
-    const parIn = sumPars(backPars);
-    const parTot = sumPars([parOut, parIn]);
-
-    lines.push(buildDivider(48));
-    lines.push(`{bold}Round ${round.period}{/bold}  Score: ${round.displayValue || '--'}  Out: ${round.outScore || '--'}  In: ${round.inScore || '--'}`);
-    lines.push(buildTextRow('HOLE', frontHoles.concat(['OUT'])));
-    lines.push(buildTextRow('PAR', frontPars.concat([parOut])));
-    lines.push(buildScoreRow('SCR', frontHoles.map((hole) => linescoresByHole[hole]).concat([null]), frontScores.concat([round.outScore || '--'])));
-    lines.push('');
-    lines.push(buildTextRow('HOLE', backHoles.concat(['IN', 'TOT'])));
-    lines.push(buildTextRow('PAR', backPars.concat([parIn, parTot])));
-    lines.push(buildScoreRow('SCR', backHoles.map((hole) => linescoresByHole[hole]).concat([null, null]), backScores.concat([round.inScore || '--', round.displayValue || '--'])));
-    lines.push('');
-  });
+  const currentRound = getCurrentRound(rounds);
+  lines.push('{bold}Current Round{/bold}');
+  lines.push(formatRoundHeader(currentRound));
+  lines.push(...buildRoundRows(currentRound));
+  lines.push('');
 
   lines.push(buildLegendLine());
+  lines.push('');
+  lines.push('{gray-fg}Press Enter for full rounds + event stats{/gray-fg}');
+  return lines.join('\n');
+}
+
+function formatDetailedScorecard(player, summary) {
+  const rounds = _.sortBy(summary.rounds || [], (round) => round.period);
+  const lines = [];
+
+  lines.push(`${player.PLAYER}`);
+  lines.push(`POS: ${player.POS || '--'}   SCORE: ${player.SCORE || '--'}   THRU: ${player.THRU || '--'}`);
+  lines.push('');
+  lines.push('{bold}All Rounds{/bold}');
+
+  if (!rounds.length) {
+    lines.push('No round-by-round scorecard available yet.');
+  } else {
+    _.forEach(rounds, (round) => {
+      lines.push(buildDivider(52));
+      lines.push(formatRoundHeader(round));
+      lines.push(...buildRoundRows(round));
+      lines.push('');
+    });
+  }
+
+  lines.push(buildLegendLine());
+  lines.push('');
+  lines.push('{bold}Event Stats{/bold}');
+  lines.push(...buildStatsRows(summary.stats || []));
   return lines.join('\n');
 }
 
@@ -248,6 +346,80 @@ function holePar(linescore) {
     return '--';
   }
   return `${linescore.par}`;
+}
+
+function getCurrentRound(rounds) {
+  const withScores = _.filter(rounds, (round) => (round.linescores || []).length > 0);
+  if (withScores.length) {
+    return _.last(withScores);
+  }
+  return _.last(rounds);
+}
+
+function formatRoundHeader(round) {
+  return `{bold}Round ${round.period}{/bold}  Score: ${round.displayValue || '--'}  Out: ${round.outScore || '--'}  In: ${round.inScore || '--'}`;
+}
+
+function buildRoundRows(round) {
+  const rows = [];
+  const linescoresByHole = _.keyBy(round.linescores || [], 'period');
+  const frontHoles = _.range(1, 10);
+  const backHoles = _.range(10, 19);
+
+  const frontPars = _.map(frontHoles, (hole) => holePar(linescoresByHole[hole]));
+  const backPars = _.map(backHoles, (hole) => holePar(linescoresByHole[hole]));
+  const frontScores = _.map(frontHoles, (hole) => holeScore(linescoresByHole[hole]));
+  const backScores = _.map(backHoles, (hole) => holeScore(linescoresByHole[hole]));
+
+  const parOut = sumPars(frontPars);
+  const parIn = sumPars(backPars);
+  const parTot = sumPars([parOut, parIn]);
+
+  rows.push(buildTextRow('HOLE', frontHoles.concat(['OUT'])));
+  rows.push(buildTextRow('PAR', frontPars.concat([parOut])));
+  rows.push(buildScoreRow('SCR', frontHoles.map((hole) => linescoresByHole[hole]).concat([null]), frontScores.concat([round.outScore || '--'])));
+  rows.push('');
+  rows.push(buildTextRow('HOLE', backHoles.concat(['IN', 'TOT'])));
+  rows.push(buildTextRow('PAR', backPars.concat([parIn, parTot])));
+  rows.push(buildScoreRow('SCR', backHoles.map((hole) => linescoresByHole[hole]).concat([null, null]), backScores.concat([round.inScore || '--', round.displayValue || '--'])));
+  return rows;
+}
+
+function buildStatsRows(stats) {
+  if (!stats.length) {
+    return ['No event stats available yet.'];
+  }
+
+  const preferredOrder = [
+    'scoreToPar',
+    'regScore',
+    'driveDistAvg',
+    'driveAccuracyPct',
+    'gir',
+    'puttsGirAvg',
+    'eagles',
+    'birdies',
+    'pars',
+    'bogeys',
+    'doubles',
+    'dBogey',
+    'dBogeyPlus'
+  ];
+  const rankByName = _.reduce(preferredOrder, (memo, statName, index) => {
+    memo[statName] = index;
+    return memo;
+  }, {});
+
+  const sorted = _.sortBy(stats, (stat) => {
+    const name = stat.name || '';
+    return rankByName[name] == null ? 1000 : rankByName[name];
+  });
+
+  return _.map(sorted, (stat) => {
+    const label = stat.displayName || stat.name || 'Stat';
+    const value = stat.displayValue == null || stat.displayValue === '' ? '--' : stat.displayValue;
+    return `${padEnd(label, 24)} ${value}`;
+  });
 }
 
 function sumPars(parValues) {
@@ -330,6 +502,14 @@ function buildDivider(length) {
 
 function formatLabelCell(label) {
   return `{bold}${padCell(label, SCORECARD_LABEL_WIDTH, 'left')}{/bold}`;
+}
+
+function padEnd(value, width) {
+  const text = `${value == null ? '' : value}`;
+  if (text.length >= width) {
+    return text.slice(0, width);
+  }
+  return `${text}${' '.repeat(width - text.length)}`;
 }
 
 function findCompetitorByName(playerName) {
