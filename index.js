@@ -8,8 +8,10 @@ const scraper = require('table-scraper');
 
 const url = 'https://www.espn.com/golf/leaderboard';
 const siteApiBase = 'https://site.web.api.espn.com/apis/site/v2/sports/golf';
-const updateFrequencyMins = 10;
-const updateFrequencyMillis = updateFrequencyMins * 60 * 1000;
+const liveUpdateFrequencyMins = 1;
+const idleUpdateFrequencyMins = 10;
+const liveUpdateFrequencyMillis = liveUpdateFrequencyMins * 60 * 1000;
+const idleUpdateFrequencyMillis = idleUpdateFrequencyMins * 60 * 1000;
 const SCORE_STYLES = {
   eagle: { fg: 'black', bg: 'yellow', label: 'EAGLE' },
   birdie: { fg: 'black', bg: 'green', label: 'BIRDIE' },
@@ -18,6 +20,48 @@ const SCORE_STYLES = {
 };
 const SCORECARD_LABEL_WIDTH = 4;
 const SCORECARD_CELL_WIDTH = 4;
+const STATS_LABEL_WIDTH = 30;
+const STATS_VALUE_WIDTH = 12;
+const PRIMARY_STAT_ORDER = [
+  'scoreToPar',
+  'regScore',
+  'driveDistAvg',
+  'driveAccuracyPct',
+  'gir',
+  'puttsGirAvg',
+  'eagles',
+  'birdies',
+  'pars',
+  'bogeys',
+  'dBogeyPlus'
+];
+const STAT_LABEL_OVERRIDES = {
+  scoreToPar: 'Score To Par',
+  regScore: 'Total',
+  driveDistAvg: 'Driving Distance',
+  driveAccuracyPct: 'Driving Accuracy %',
+  gir: 'GIR',
+  puttsGirAvg: 'Putts per GIR',
+  eagles: 'Eagles',
+  birdies: 'Birdies',
+  pars: 'Pars',
+  bogeys: 'Bogeys',
+  dBogey: 'Double Bogeys',
+  dBogeyPlus: 'DBL+',
+  tournamentsPlayed: 'Tournaments Played',
+  startScore: 'Starting Score',
+  girPoss: 'Possible GIR',
+  sandSavesPct: 'Sand Save %',
+  sandSavesPoss: 'Possible Sand Saves',
+  penalties: 'Penalties',
+  officialMoney: 'Official Money Won',
+  cutsMade: 'Cuts Made',
+  consecutiveCutsMade: 'Consecutive Cuts',
+  officialEarnings: 'Official Earnings',
+  adjustedScoringAvg: 'Adjusted Scoring Avg',
+  adjustment: 'Adjustment',
+  fedExCupPoints: 'FedExCup Points'
+};
 
 let screen;
 let grid;
@@ -33,6 +77,10 @@ let suppressSelectionEvents = false;
 let playerJumpBuffer = '';
 let playerJumpTimeout = null;
 let detailViewOpen = false;
+let refreshTimer = null;
+let isUpdatingLeaderboard = false;
+let refreshRequestedWhileUpdating = false;
+let currentRefreshIntervalMillis = idleUpdateFrequencyMillis;
 const scorecardCache = {};
 const playerJumpResetMillis = 1200;
 init();
@@ -49,10 +97,12 @@ function init() {
     }
     jumpToTopLeaderboard();
   });
+  screen.key(['r', 'R'], () => {
+    requestLeaderboardUpdate();
+  });
 
   createLayout();
-  updateLeaderboard();
-  setInterval(updateLeaderboard, updateFrequencyMillis);
+  requestLeaderboardUpdate();
 }
 
 function createLayout() {
@@ -149,6 +199,7 @@ function createLayout() {
 }
 
 function updateLeaderboard() {
+  isUpdatingLeaderboard = true;
   Promise.all([
     scraper.get(url),
     fetchLeaderboardMeta()
@@ -156,11 +207,14 @@ function updateLeaderboard() {
   .then((response) => {
     const scrapedTables = response[0] || [];
     leaderboardMeta = response[1];
+    currentRefreshIntervalMillis = getRefreshIntervalMillis(leaderboardMeta);
     const now = new Date();
     playerList = scrapedTables[0] || []; // assumes leaderboard is first table on page
 
+    const refreshFrequencyMins = Math.round(currentRefreshIntervalMillis / 60000);
+    const liveStatusText = leaderboardMeta && leaderboardMeta.isLive ? 'live' : 'not live';
     table.setLabel({
-      text: `Last updated: ${now.getHours()}:${now.getMinutes() < 10 ? 0 : ''}${now.getMinutes()} (updates every ${updateFrequencyMins} minutes)`,
+      text: `Last updated: ${now.getHours()}:${now.getMinutes() < 10 ? 0 : ''}${now.getMinutes()} (${liveStatusText}, refresh ${refreshFrequencyMins}m)`,
       side: 'right'
     });
 
@@ -168,9 +222,45 @@ function updateLeaderboard() {
     refilter(filterInput.getValue() || '');
   })
   .catch(() => {
+    currentRefreshIntervalMillis = idleUpdateFrequencyMillis;
     scorecardBox.setContent('Unable to refresh leaderboard right now.');
     screen.render();
+  })
+  .finally(() => {
+    isUpdatingLeaderboard = false;
+    if (refreshRequestedWhileUpdating) {
+      refreshRequestedWhileUpdating = false;
+      requestLeaderboardUpdate();
+      return;
+    }
+    scheduleNextRefresh();
   });
+}
+
+function requestLeaderboardUpdate() {
+  if (isUpdatingLeaderboard) {
+    refreshRequestedWhileUpdating = true;
+    return;
+  }
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+  updateLeaderboard();
+}
+
+function scheduleNextRefresh() {
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+  }
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    requestLeaderboardUpdate();
+  }, currentRefreshIntervalMillis);
+}
+
+function getRefreshIntervalMillis(meta) {
+  return meta && meta.isLive ? liveUpdateFrequencyMillis : idleUpdateFrequencyMillis;
 }
 
 function refilter(filterText) {
@@ -352,6 +442,7 @@ function openDetailView(index) {
 function showDetailContent(content) {
   openDetailOverlay();
   detailBox.setContent(content);
+  detailBox.setScroll(0);
   screen.render();
 }
 
@@ -493,36 +584,31 @@ function buildStatsRows(stats) {
     return ['No event stats available yet.'];
   }
 
-  const preferredOrder = [
-    'scoreToPar',
-    'regScore',
-    'driveDistAvg',
-    'driveAccuracyPct',
-    'gir',
-    'puttsGirAvg',
-    'eagles',
-    'birdies',
-    'pars',
-    'bogeys',
-    'doubles',
-    'dBogey',
-    'dBogeyPlus'
-  ];
-  const rankByName = _.reduce(preferredOrder, (memo, statName, index) => {
-    memo[statName] = index;
-    return memo;
-  }, {});
+  const statByName = _.keyBy(stats, 'name');
+  const lines = [];
 
-  const sorted = _.sortBy(stats, (stat) => {
-    const name = stat.name || '';
-    return rankByName[name] == null ? 1000 : rankByName[name];
-  });
+  const keyStats = _.compact(_.map(PRIMARY_STAT_ORDER, (name) => {
+    const stat = statByName[name];
+    return stat ? buildStatEntry(stat) : null;
+  }));
 
-  return _.map(sorted, (stat) => {
-    const label = stat.displayName || stat.name || 'Stat';
-    const value = stat.displayValue == null || stat.displayValue === '' ? '--' : stat.displayValue;
-    return `${padEnd(label, 24)} ${value}`;
-  });
+  if (keyStats.length) {
+    lines.push(...buildStatsTable('Key Stats', keyStats));
+  }
+
+  const primarySet = _.keyBy(PRIMARY_STAT_ORDER, _.identity);
+  const additionalStats = _.chain(stats)
+    .filter((stat) => !primarySet[stat.name])
+    .map(buildStatEntry)
+    .filter((entry) => isMeaningfulStatValue(entry.value))
+    .value();
+
+  if (additionalStats.length) {
+    lines.push('');
+    lines.push(...buildStatsTable('Additional Stats', additionalStats));
+  }
+
+  return lines;
 }
 
 function sumPars(parValues) {
@@ -615,6 +701,53 @@ function padEnd(value, width) {
   return `${text}${' '.repeat(width - text.length)}`;
 }
 
+function padStart(value, width) {
+  const text = `${value == null ? '' : value}`;
+  if (text.length >= width) {
+    return text.slice(0, width);
+  }
+  return `${' '.repeat(width - text.length)}${text}`;
+}
+
+function buildStatEntry(stat) {
+  return {
+    name: stat.name || 'stat',
+    label: STAT_LABEL_OVERRIDES[stat.name] || stat.displayName || stat.name || 'Stat',
+    value: stat.displayValue == null || stat.displayValue === '' ? '--' : `${stat.displayValue}`
+  };
+}
+
+function buildStatsTable(title, entries) {
+  const lines = [];
+  const border = `+${'-'.repeat(STATS_LABEL_WIDTH + 2)}+${'-'.repeat(STATS_VALUE_WIDTH + 2)}+`;
+
+  lines.push(`{bold}${title}{/bold}`);
+  lines.push(border);
+  lines.push(`| ${padEnd('Stat', STATS_LABEL_WIDTH)} | ${padEnd('Value', STATS_VALUE_WIDTH)} |`);
+  lines.push(border);
+
+  _.forEach(entries, (entry) => {
+    lines.push(`| ${padEnd(entry.label, STATS_LABEL_WIDTH)} | {bold}${padStart(entry.value, STATS_VALUE_WIDTH)}{/bold} |`);
+  });
+
+  lines.push(border);
+  return lines;
+}
+
+function isMeaningfulStatValue(value) {
+  const text = `${value == null ? '' : value}`.trim();
+  if (!text || text === '--') {
+    return false;
+  }
+
+  // Hide mostly-noise rows in additional stats.
+  if (text === '0' || text === '0.0' || text === '0.00' || text === '$0') {
+    return false;
+  }
+
+  return true;
+}
+
 function findCompetitorByName(playerName) {
   if (!leaderboardMeta || !leaderboardMeta.competitorMap) {
     return null;
@@ -654,10 +787,28 @@ function fetchLeaderboardMeta() {
       return {
         id: leaderboard.id,
         tour: leaderboard.tour || 'pga',
+        isLive: isLeaderboardLive(leaderboard),
         competitorMap: competitorMap
       };
     })
     .catch(() => null);
+}
+
+function isLeaderboardLive(leaderboard) {
+  const status = `${leaderboard.status || ''}`.toLowerCase();
+  const roundStatus = `${leaderboard.roundStatus || ''}`.toLowerCase();
+  const roundStatusDetail = `${leaderboard.roundStatusDetail || ''}`.toLowerCase();
+
+  if (status === 'in' || status === 'live') {
+    return true;
+  }
+  if (roundStatus === 'in' || roundStatus === 'live' || roundStatus === 'progress') {
+    return true;
+  }
+  if (roundStatusDetail.indexOf('in progress') !== -1 || roundStatusDetail.indexOf('live') !== -1) {
+    return true;
+  }
+  return false;
 }
 
 function fetchCompetitorSummary(tour, eventId, competitorId) {
