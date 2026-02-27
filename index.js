@@ -1300,7 +1300,7 @@ function buildLeaderboardRows(competitors, competitionStatus) {
     return {
       POS: formatLeaderboardPos(_.get(competitor, 'status.position')),
       PLAYER: _.get(competitor, 'athlete.displayName', '--'),
-      SCORE: formatLeaderboardScore(_.get(competitor, 'score.displayValue')),
+      SCORE: formatLeaderboardScore(competitor),
       TODAY: formatLeaderboardToday(competitor, currentRound),
       THRU: formatLeaderboardThru(competitor),
       R1: formatLeaderboardRoundScore(roundOne, competitor, 1, currentRound),
@@ -1331,15 +1331,34 @@ function formatLeaderboardPos(position) {
   return `T${text}`;
 }
 
-function formatLeaderboardScore(value) {
+function normalizeScoreDisplay(value) {
   const text = `${value == null ? '' : value}`.trim();
   if (!text || text === '--') {
     return '--';
   }
-  if (text === '0') {
+  if (text === '0' || text === '+0' || text === '-0') {
     return 'E';
   }
   return text;
+}
+
+function getCompetitorStatByName(competitor, statName) {
+  return _.find(competitor && competitor.statistics, (stat) => stat && stat.name === statName) || null;
+}
+
+function formatLeaderboardScore(competitor) {
+  const scoreToParStat = getCompetitorStatByName(competitor, 'scoreToPar');
+  const scoreToParDisplay = `${_.get(scoreToParStat, 'displayValue', '')}`.trim();
+  if (scoreToParDisplay && scoreToParDisplay !== '--') {
+    return normalizeScoreDisplay(scoreToParDisplay);
+  }
+
+  const scoreToParValue = _.get(scoreToParStat, 'value');
+  if (scoreToParValue != null && scoreToParValue !== '') {
+    return normalizeScoreDisplay(scoreToParValue);
+  }
+
+  return normalizeScoreDisplay(_.get(competitor, 'score.displayValue'));
 }
 
 function formatLeaderboardToday(competitor, currentRound) {
@@ -1425,12 +1444,21 @@ function formatLeaderboardRoundScore(roundLine, competitor, roundPeriod, current
 }
 
 function formatLeaderboardTotal(competitor) {
+  const totalFromRounds = _.chain(competitor && competitor.linescores)
+    .map((line) => parseInt(_.get(line, 'value'), 10))
+    .filter((value) => Number.isInteger(value))
+    .sum()
+    .value();
+
+  if (Number.isInteger(totalFromRounds) && totalFromRounds > 0) {
+    return `${totalFromRounds}`;
+  }
+
   const totalValue = _.get(competitor, 'score.value');
   if (totalValue != null && totalValue !== '') {
     return `${totalValue}`;
   }
-  const fallback = `${_.get(competitor, 'score.displayValue', '')}`.trim();
-  return fallback || '--';
+  return '--';
 }
 
 function parseTeeTime(teeValue) {
