@@ -4,12 +4,14 @@ const blessed = require('blessed');
 const contrib = require('blessed-contrib');
 const https = require('https');
 const _ = require('lodash');
-const scraper = require('table-scraper');
 
 const url = 'https://www.espn.com/golf/leaderboard';
 const siteApiBase = 'https://site.web.api.espn.com/apis/site/v2/sports/golf';
 const liveUpdateFrequencyMins = 1;
 const idleUpdateFrequencyMins = 10;
+const minimumSupportedNodeMajor = 18;
+const minimumScorecardPanelWidth = 44;
+const minimumScreenWidthWithScorecard = 110;
 const liveUpdateFrequencyMillis = liveUpdateFrequencyMins * 60 * 1000;
 const idleUpdateFrequencyMillis = idleUpdateFrequencyMins * 60 * 1000;
 const SCORE_STYLES = {
@@ -85,6 +87,7 @@ let refreshTimer = null;
 let isUpdatingLeaderboard = false;
 let refreshRequestedWhileUpdating = false;
 let currentRefreshIntervalMillis = idleUpdateFrequencyMillis;
+let scorecardCollapsed = false;
 const scorecardCache = {};
 const playerJumpResetMillis = 1200;
 init();
@@ -101,7 +104,7 @@ function init() {
     }
     jumpToTopLeaderboard();
   });
-  screen.key(['r', 'R'], () => {
+  screen.key(['`'], () => {
     requestLeaderboardUpdate();
   });
   screen.key(['/'], () => {
@@ -113,9 +116,36 @@ function init() {
 
   createLayout();
   screen.on('resize', () => {
+    applyResponsiveLayout();
     updateTopInfoBar();
+    if (!scorecardCollapsed && filteredPlayerList.length) {
+      scheduleScorecardLoad(table.rows.selected || 0);
+    }
+    screen.render();
   });
+
+  if (!isNodeVersionSupported()) {
+    showNodeVersionMessage();
+    return;
+  }
+
   requestLeaderboardUpdate();
+}
+
+function isNodeVersionSupported() {
+  const major = parseInt(`${_.get(process, 'versions.node', '0')}`.split('.')[0], 10);
+  return Number.isInteger(major) && major >= minimumSupportedNodeMajor;
+}
+
+function showNodeVersionMessage() {
+  const version = `${process.version || 'unknown'}`;
+  if (topInfoBar) {
+    topInfoBar.setContent(`Node ${version} is too old. Use Node ${minimumSupportedNodeMajor}+.`);
+  }
+  if (scorecardBox) {
+    scorecardBox.setContent('Please switch to Node 20+ (example: nvm use 20), then restart.');
+  }
+  screen.render();
 }
 
 function createLayout() {
@@ -239,24 +269,76 @@ function createLayout() {
   // Type-to-jump search when leaderboard table is focused.
   table.rows.on('keypress', (ch, key) => handlePlayerJumpKeypress(ch, key));
 
+  applyResponsiveLayout();
   updateShortcutBar();
   table.focus();
   screen.render();
 }
 
+function applyResponsiveLayout() {
+  if (!screen || !table || !topInfoBar || !scorecardBox || !shortcutBar) {
+    return;
+  }
+
+  const totalWidth = Number(screen.width) || 120;
+  const totalHeight = Number(screen.height) || 32;
+  const topHeight = 3;
+  const bottomHeight = 3;
+  const mainHeight = Math.max(6, totalHeight - topHeight - bottomHeight);
+  const canShowScorecard = totalWidth >= minimumScreenWidthWithScorecard;
+
+  let scorecardWidth = canShowScorecard ? Math.floor(totalWidth / 3) : 0;
+  if (canShowScorecard) {
+    scorecardWidth = Math.max(minimumScorecardPanelWidth, scorecardWidth);
+    scorecardWidth = Math.min(scorecardWidth, totalWidth - 30);
+  }
+  const tableWidth = Math.max(30, totalWidth - scorecardWidth);
+
+  scorecardCollapsed = !canShowScorecard || scorecardWidth < minimumScorecardPanelWidth;
+
+  topInfoBar.top = 0;
+  topInfoBar.left = 0;
+  topInfoBar.width = tableWidth;
+  topInfoBar.height = topHeight;
+
+  table.top = topHeight;
+  table.left = 0;
+  table.width = tableWidth;
+  table.height = mainHeight;
+
+  scorecardBox.top = 0;
+  scorecardBox.left = tableWidth;
+  scorecardBox.width = scorecardWidth;
+  scorecardBox.height = topHeight + mainHeight;
+
+  shortcutBar.top = topHeight + mainHeight;
+  shortcutBar.left = 0;
+  shortcutBar.width = totalWidth;
+  shortcutBar.height = bottomHeight;
+
+  if (scorecardCollapsed || detailViewOpen) {
+    scorecardBox.hide();
+  } else {
+    scorecardBox.show();
+  }
+
+  if (scorecardCollapsed) {
+    scorecardBox.setContent('Scorecard hidden on narrow terminals. Widen window for side panel.');
+  }
+
+  updateShortcutBar();
+}
+
 function updateLeaderboard() {
   const selectedPlayerNameBeforeUpdate = getSelectedPlayerName();
   isUpdatingLeaderboard = true;
-  Promise.all([
-    scraper.get(url),
-    fetchLeaderboardMeta()
-  ])
+  fetchLeaderboardData()
   .then((response) => {
-    const scrapedTables = response[0] || [];
-    leaderboardMeta = response[1];
+    leaderboardMeta = response.meta;
     currentRefreshIntervalMillis = getRefreshIntervalMillis(leaderboardMeta);
     const now = new Date();
-    playerList = scrapedTables[0] || []; // assumes leaderboard is first table on page
+    playerList = response.rows || [];
+    clearScorecardCache();
 
     const refreshFrequencyMins = Math.round(currentRefreshIntervalMillis / 60000);
     const liveStatusText = leaderboardMeta && leaderboardMeta.isLive ? 'live' : 'not live';
@@ -270,8 +352,14 @@ function updateLeaderboard() {
   })
   .catch(() => {
     currentRefreshIntervalMillis = idleUpdateFrequencyMillis;
-    scorecardBox.setContent('Unable to refresh leaderboard right now.');
-    if (topInfoBar) {
+    const hasExistingRows = playerList.length > 0;
+    const hasExistingMeta = !!leaderboardMeta;
+    if (!hasExistingRows) {
+      scorecardBox.setContent('Unable to refresh leaderboard right now.');
+    } else {
+      scorecardBox.setContent('Refresh failed. Showing last successful leaderboard.');
+    }
+    if (topInfoBar && !hasExistingMeta) {
       topInfoBar.setContent('Unable to load event info.');
     }
     screen.render();
@@ -297,6 +385,12 @@ function requestLeaderboardUpdate() {
     refreshTimer = null;
   }
   updateLeaderboard();
+}
+
+function clearScorecardCache() {
+  Object.keys(scorecardCache).forEach((key) => {
+    delete scorecardCache[key];
+  });
 }
 
 function scheduleNextRefresh() {
@@ -339,6 +433,7 @@ function refilter(filterText, options) {
   });
 
   const header = _.keys(_.omit(filteredPlayerList[0] || {}, ['CTRY']));
+  adjustTableColumnWidths(header);
   suppressSelectionEvents = true;
   table.setData({ data: tableData, headers: header });
   const preferredIndex = findPlayerIndexByName(preferredPlayerName);
@@ -359,7 +454,21 @@ function refilter(filterText, options) {
   screen.render();
 }
 
+function adjustTableColumnWidths(headers) {
+  if (!table || !table.options || !Array.isArray(headers)) {
+    return;
+  }
+  table.options.columnWidth = _.map(headers, () => 8);
+  const playerColumnIndex = _.indexOf(headers, 'PLAYER');
+  if (playerColumnIndex >= 0) {
+    table.options.columnWidth[playerColumnIndex] = 24;
+  }
+}
+
 function scheduleScorecardLoad(index) {
+  if (scorecardCollapsed) {
+    return;
+  }
   if (scorecardSelectionTimeout) {
     clearTimeout(scorecardSelectionTimeout);
   }
@@ -470,6 +579,10 @@ function findPlayerIndexByName(playerName) {
 }
 
 function showScorecard(index) {
+  if (scorecardCollapsed) {
+    return;
+  }
+
   const selected = filteredPlayerList[index];
   if (!selected || !selected.PLAYER) {
     return;
@@ -562,6 +675,7 @@ function openDetailOverlay() {
   table.hide();
   scorecardBox.hide();
   detailBox.show();
+  applyResponsiveLayout();
   updateShortcutBar();
   detailContentBox.focus();
 }
@@ -574,7 +688,7 @@ function closeDetailView() {
   detailBox.hide();
   topInfoBar.show();
   table.show();
-  scorecardBox.show();
+  applyResponsiveLayout();
   updateShortcutBar();
   table.focus();
   screen.render();
@@ -586,7 +700,8 @@ function updateShortcutBar() {
   }
 
   const activeState = showActiveOnly ? 'ON' : 'OFF';
-  const mainShortcuts = `{bold}Esc{/bold}:Top  {bold}R{/bold}:Refresh  {bold}/{/bold}:Active ${activeState}  {bold}Enter{/bold}:Player Detail  {bold}A-Z{/bold}:Jump Search  {bold}C-c{/bold}:Quit`;
+  const scorecardHint = scorecardCollapsed ? '  {gray-fg}Scorecard:Hidden (widen terminal){/gray-fg}' : '';
+  const mainShortcuts = `{bold}Esc{/bold}:Top  {bold}\`{/bold}:Refresh  {bold}/{/bold}:Active ${activeState}  {bold}Enter{/bold}:Player Detail  {bold}A-Z{/bold}:Jump Search  {bold}C-c{/bold}:Quit${scorecardHint}`;
   const detailShortcuts = '{bold}L{/bold}:Back to Leaderboard  {bold}Esc{/bold}:Back + Top  {bold}C-c{/bold}:Quit';
 
   shortcutBar.setContent(detailViewOpen ? detailShortcuts : mainShortcuts);
@@ -1101,63 +1216,243 @@ function normalizeName(name) {
 }
 
 function fetchLeaderboardMeta() {
-  return fetchText(url)
-    .then((html) => {
-      const match = html.match(/window\['__espnfitt__'\]=([\s\S]*?);<\/script>/);
-      if (!match || !match[1]) {
-        return null;
-      }
-
-      const payload = JSON.parse(match[1]);
-      const leaderboard = _.get(payload, 'page.content.leaderboard');
-      if (!leaderboard) {
-        return null;
-      }
-      const courses = leaderboard.courses || {};
-      const hostCourse = _.find(_.values(courses), (course) => course && course.host) || _.first(_.values(courses));
-      const city = _.get(hostCourse, 'addy.city', '');
-      const state = _.get(hostCourse, 'addy.state', '');
-      const country = _.get(hostCourse, 'addy.country', '');
-      const cityState = [city, state].filter(Boolean).join(', ');
-      const location = cityState || [city, country].filter(Boolean).join(', ') || _.get(hostCourse, 'nm', '');
-      const purse = _.get(leaderboard, 'hdr.evnt.dspPrse')
-        || _.get(leaderboard, 'hdr.evnt.prse')
-        || _.get(leaderboard, 'hdr.event.displayPurse')
-        || '';
-
-      const competitors = leaderboard.competitors || [];
-      const competitorMap = _.reduce(competitors, (memo, competitor) => {
-        memo[normalizeName(competitor.name)] = competitor;
-        return memo;
-      }, {});
-
-      return {
-        id: leaderboard.id,
-        tour: leaderboard.tour || 'pga',
-        name: leaderboard.name || _.get(leaderboard, 'hdr.event.name', ''),
-        currentRound: leaderboard.currentRound,
-        location: location,
-        cityState: cityState,
-        purse: purse,
-        isLive: isLeaderboardLive(leaderboard),
-        competitorMap: competitorMap
-      };
-    })
+  return fetchLeaderboardData()
+    .then((data) => data.meta)
     .catch(() => null);
 }
 
-function isLeaderboardLive(leaderboard) {
-  const status = `${leaderboard.status || ''}`.toLowerCase();
-  const roundStatus = `${leaderboard.roundStatus || ''}`.toLowerCase();
-  const roundStatusDetail = `${leaderboard.roundStatusDetail || ''}`.toLowerCase();
+function fetchLeaderboardData() {
+  const leaderboardUrl = `${siteApiBase}/leaderboard?region=us&lang=en`;
+  return fetchJson(leaderboardUrl).then((payload) => {
+    const event = pickPrimaryEvent(payload && payload.events);
+    if (!event) {
+      throw new Error('Unable to locate event in leaderboard response');
+    }
 
-  if (status === 'in' || status === 'live') {
+    const competition = _.first(event.competitions || []);
+    if (!competition) {
+      throw new Error('Unable to locate competition in leaderboard response');
+    }
+
+    return {
+      meta: buildLeaderboardMeta(event, competition),
+      rows: buildLeaderboardRows(competition.competitors || [], competition.status || {})
+    };
+  });
+}
+
+function pickPrimaryEvent(events) {
+  const list = events || [];
+  return _.find(list, (event) => event && event.primary) || _.first(list) || null;
+}
+
+function buildLeaderboardMeta(event, competition) {
+  const courses = event.courses || [];
+  const hostCourse = _.find(courses, (course) => course && course.host) || _.first(courses);
+  const city = _.get(hostCourse, 'address.city', '');
+  const state = _.get(hostCourse, 'address.state', '');
+  const country = _.get(hostCourse, 'address.country', '');
+  const cityState = [city, state].filter(Boolean).join(', ');
+  const location = cityState || [city, country].filter(Boolean).join(', ') || _.get(hostCourse, 'name', '');
+  const purse = _.get(event, 'displayPurse')
+    || _.get(event, 'purse')
+    || '';
+
+  const competitors = competition.competitors || [];
+  const competitorMap = _.reduce(competitors, (memo, competitor) => {
+    const playerName = _.get(competitor, 'athlete.displayName', '');
+    if (!playerName) {
+      return memo;
+    }
+    memo[normalizeName(playerName)] = {
+      id: `${competitor.id || ''}`,
+      status: _.get(competitor, 'status.type.state', ''),
+      name: playerName
+    };
+    return memo;
+  }, {});
+
+  return {
+    id: `${event.id || ''}`,
+    tour: _.get(event, 'league.slug', 'pga'),
+    name: event.name || event.shortName || '',
+    currentRound: _.get(competition, 'status.period') || _.get(event, 'status.period') || null,
+    location: location,
+    cityState: cityState,
+    purse: purse,
+    isLive: isLeaderboardLive(competition.status, event.status),
+    competitorMap: competitorMap
+  };
+}
+
+function buildLeaderboardRows(competitors, competitionStatus) {
+  const currentRound = _.get(competitionStatus, 'period') || 1;
+  const sorted = _.sortBy(competitors, (competitor) => {
+    const order = parseInt(competitor && competitor.sortOrder, 10);
+    return Number.isNaN(order) ? Number.MAX_SAFE_INTEGER : order;
+  });
+
+  return _.map(sorted, (competitor) => {
+    const roundOne = findRoundScoreByPeriod(competitor.linescores, 1);
+    const roundTwo = findRoundScoreByPeriod(competitor.linescores, 2);
+    const roundThree = findRoundScoreByPeriod(competitor.linescores, 3);
+    const roundFour = findRoundScoreByPeriod(competitor.linescores, 4);
+    return {
+      POS: formatLeaderboardPos(_.get(competitor, 'status.position')),
+      PLAYER: _.get(competitor, 'athlete.displayName', '--'),
+      SCORE: formatLeaderboardScore(_.get(competitor, 'score.displayValue')),
+      TODAY: formatLeaderboardToday(competitor, currentRound),
+      THRU: formatLeaderboardThru(competitor),
+      R1: formatLeaderboardRoundScore(roundOne, competitor, 1, currentRound),
+      R2: formatLeaderboardRoundScore(roundTwo, competitor, 2, currentRound),
+      R3: formatLeaderboardRoundScore(roundThree, competitor, 3, currentRound),
+      R4: formatLeaderboardRoundScore(roundFour, competitor, 4, currentRound),
+      TOT: formatLeaderboardTotal(competitor),
+      CTRY: _.get(competitor, 'athlete.flag.alt', '')
+    };
+  });
+}
+
+function findRoundScoreByPeriod(linescores, period) {
+  return _.find(linescores || [], (line) => parseInt(line && line.period, 10) === period) || null;
+}
+
+function formatLeaderboardPos(position) {
+  if (!position || !position.displayName) {
+    return '--';
+  }
+  const text = `${position.displayName}`;
+  if (!position.isTie) {
+    return text;
+  }
+  if (text.indexOf('T') === 0) {
+    return text;
+  }
+  return `T${text}`;
+}
+
+function formatLeaderboardScore(value) {
+  const text = `${value == null ? '' : value}`.trim();
+  if (!text || text === '--') {
+    return '--';
+  }
+  if (text === '0') {
+    return 'E';
+  }
+  return text;
+}
+
+function formatLeaderboardToday(competitor, currentRound) {
+  const state = `${_.get(competitor, 'status.type.state', '')}`.toLowerCase();
+  const line = findRoundScoreByPeriod(competitor.linescores, currentRound);
+  const displayValue = _.get(line, 'displayValue', '');
+  const text = `${displayValue || ''}`.trim();
+  if (!text) {
+    if (state === 'pre') {
+      return '-';
+    }
+    if (state === 'in' || state === 'live') {
+      const detail = `${_.get(competitor, 'status.detail', '')}`.trim();
+      if (detail.indexOf('(') !== -1) {
+        return detail.split('(')[0];
+      }
+    }
+    return '--';
+  }
+  if (text === '0') {
+    return 'E';
+  }
+  if (text.indexOf('(') !== -1) {
+    return text.split('(')[0];
+  }
+  return text;
+}
+
+function formatLeaderboardThru(competitor) {
+  const statusState = `${_.get(competitor, 'status.type.state', '')}`.toLowerCase();
+  const thruValue = _.get(competitor, 'status.thru');
+  const thruText = `${thruValue == null ? '' : thruValue}`.trim();
+
+  if ((statusState === 'in' || statusState === 'live') && /^\d+$/.test(thruText) && parseInt(thruText, 10) > 0) {
+    return thruText;
+  }
+
+  if (statusState === 'post' || _.get(competitor, 'status.type.completed')) {
+    return 'F';
+  }
+
+  const teeTime = parseTeeTime(_.get(competitor, 'status.teeTime') || _.get(competitor, 'status.displayValue'));
+  if (teeTime) {
+    return teeTime;
+  }
+
+  const detail = `${_.get(competitor, 'status.detail', '')}`.trim();
+  if (detail && detail !== 'Scheduled') {
+    return detail.replace(/\sET$/, '');
+  }
+
+  if (thruText && thruText !== '0') {
+    return thruText;
+  }
+
+  return '--';
+}
+
+function formatLeaderboardRoundScore(roundLine, competitor, roundPeriod, currentRound) {
+  if (!roundLine) {
+    return '--';
+  }
+
+  const state = `${_.get(competitor, 'status.type.state', '')}`.toLowerCase();
+  const thru = parseInt(_.get(competitor, 'status.thru'), 10);
+  const isCurrentRound = roundPeriod === currentRound;
+  const currentRoundInProgress = isCurrentRound && (state === 'in' || state === 'live') && Number.isInteger(thru) && thru > 0 && thru < 18;
+
+  if (currentRoundInProgress) {
+    return '--';
+  }
+
+  const roundValue = _.get(roundLine, 'value');
+  if (roundValue != null && roundValue !== '') {
+    return `${roundValue}`;
+  }
+
+  const displayValue = `${_.get(roundLine, 'displayValue', '')}`.trim();
+  if (!displayValue || displayValue === '-' || displayValue === 'undefined') {
+    return '--';
+  }
+  return displayValue;
+}
+
+function formatLeaderboardTotal(competitor) {
+  const totalValue = _.get(competitor, 'score.value');
+  if (totalValue != null && totalValue !== '') {
+    return `${totalValue}`;
+  }
+  const fallback = `${_.get(competitor, 'score.displayValue', '')}`.trim();
+  return fallback || '--';
+}
+
+function parseTeeTime(teeValue) {
+  if (!teeValue) {
+    return null;
+  }
+  const teeDate = new Date(teeValue);
+  if (Number.isNaN(teeDate.getTime())) {
+    return null;
+  }
+  return teeDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+function isLeaderboardLive(competitionStatus, eventStatus) {
+  const competitionState = `${_.get(competitionStatus, 'type.state', '')}`.toLowerCase();
+  const eventState = `${_.get(eventStatus, 'type.state', '')}`.toLowerCase();
+  const shortDetail = `${_.get(competitionStatus, 'type.shortDetail', '')}`.toLowerCase();
+
+  if (competitionState === 'in' || competitionState === 'live' || eventState === 'in' || eventState === 'live') {
     return true;
   }
-  if (roundStatus === 'in' || roundStatus === 'live' || roundStatus === 'progress') {
-    return true;
-  }
-  if (roundStatusDetail.indexOf('in progress') !== -1 || roundStatusDetail.indexOf('live') !== -1) {
+  if (shortDetail.indexOf('in progress') !== -1 || shortDetail.indexOf('live') !== -1) {
     return true;
   }
   return false;
