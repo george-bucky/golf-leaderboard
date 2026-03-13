@@ -15,6 +15,7 @@ const minimumScorecardPanelWidth = 44;
 const minimumScreenWidthWithScorecard = 110;
 const liveUpdateFrequencyMillis = liveUpdateFrequencyMins * 60 * 1000;
 const idleUpdateFrequencyMillis = idleUpdateFrequencyMins * 60 * 1000;
+const PLAYER_VIEW_MODES = ['all', 'active', 'favorites'];
 const SCORE_STYLES = {
   eagle: { fg: 'black', bg: 'yellow', label: 'EAGLE' },
   birdie: { fg: 'black', bg: 'green', label: 'BIRDIE' },
@@ -84,7 +85,7 @@ let suppressSelectionEvents = false;
 let playerJumpBuffer = '';
 let playerJumpTimeout = null;
 let detailViewOpen = false;
-let showActiveOnly = false;
+let playerViewMode = PLAYER_VIEW_MODES[0];
 let refreshTimer = null;
 let isUpdatingLeaderboard = false;
 let refreshRequestedWhileUpdating = false;
@@ -98,6 +99,7 @@ let selectedEvent = null;
 let eventSelectorShowingLiveOnly = true;
 let eventSelectorCards = [];
 let eventSelectorGridColumns = 1;
+const favoritePlayersByEvent = {};
 const scorecardCache = {};
 const playerJumpResetMillis = 1200;
 init();
@@ -128,7 +130,13 @@ function init() {
     if (detailViewOpen || eventSelectorOpen) {
       return;
     }
-    toggleActiveOnlyFilter();
+    cyclePlayerViewMode();
+  });
+  screen.key([';'], () => {
+    if (detailViewOpen || eventSelectorOpen) {
+      return;
+    }
+    toggleFavoriteForSelectedPlayer();
   });
   screen.key(['1'], () => {
     if (detailViewOpen) {
@@ -743,6 +751,7 @@ function activateSelectedEvent() {
   }
 
   selectedEvent = { id: chosen.id, eventId: chosen.id, tour: chosen.tour, name: chosen.name };
+  playerViewMode = PLAYER_VIEW_MODES[0];
   eventSelectorOpen = false;
   clearEventSelectorCards();
   applyResponsiveLayout();
@@ -848,18 +857,15 @@ function refilter(filterText, options) {
     if (!nameMatches) {
       return false;
     }
-    if (!showActiveOnly) {
-      return true;
-    }
-    return isPlayerActive(p);
+    return playerMatchesCurrentView(p);
   });
 
-  const tableData = _.map(filteredPlayerList, (p) => {
-    const row = _.omit(p, ['CTRY', 'COMP_ID']); // hidden internal fields
-    return _.values(row);
-  });
+  const visibleRows = _.map(filteredPlayerList, buildVisiblePlayerRow);
+  const fallbackRow = playerList.length ? [buildVisiblePlayerRow(playerList[0])] : [];
+  const rowSource = visibleRows.length ? visibleRows : fallbackRow;
+  const tableData = _.map(visibleRows, (row) => _.values(row));
 
-  const header = _.keys(_.omit(filteredPlayerList[0] || {}, ['CTRY', 'COMP_ID']));
+  const header = _.keys(rowSource[0] || {});
   adjustTableColumnWidths(header);
   suppressSelectionEvents = true;
   table.setData({ data: tableData, headers: header });
@@ -873,11 +879,11 @@ function refilter(filterText, options) {
   if (filteredPlayerList.length) {
     scheduleScorecardLoad(selectedIndex);
   } else {
-    scorecardBox.setContent(showActiveOnly
-      ? 'No active players match this filter.'
-      : 'No players match this filter.');
+    scorecardBox.setContent(getEmptyPlayerViewMessage());
   }
 
+  updateTopInfoBar();
+  updateShortcutBar();
   screen.render();
 }
 
@@ -886,6 +892,10 @@ function adjustTableColumnWidths(headers) {
     return;
   }
   table.options.columnWidth = _.map(headers, () => 8);
+  const favoriteColumnIndex = _.indexOf(headers, 'FAV');
+  if (favoriteColumnIndex >= 0) {
+    table.options.columnWidth[favoriteColumnIndex] = 3;
+  }
   const playerColumnIndex = _.indexOf(headers, 'PLAYER');
   if (playerColumnIndex >= 0) {
     table.options.columnWidth[playerColumnIndex] = 24;
@@ -1133,17 +1143,32 @@ function updateShortcutBar() {
     return;
   }
 
-  const activeState = showActiveOnly ? 'ON' : 'OFF';
+  const viewLabel = getPlayerViewModeLabel();
   const scorecardHint = scorecardCollapsed ? '  {light-gray-fg}Scorecard:Hidden (widen terminal){/light-gray-fg}' : '';
-  const mainShortcuts = `{bold}[Leaderboard]{/bold}  {bold}1{/bold}:Events  {bold}Esc{/bold}:Top  {bold}\`{/bold}:Refresh  {bold}/{/bold}:Active ${activeState}  {bold}Enter{/bold}:Player Detail  {bold}A-Z{/bold}:Jump Search  {bold}C-c{/bold}:Quit${scorecardHint}`;
+  const mainShortcuts = `{bold}[Leaderboard]{/bold}  {bold}1{/bold}:Events  {bold}Esc{/bold}:Top  {bold}\`{/bold}:Refresh  {bold}/{/bold}:View ${viewLabel}  {bold};{/bold}:Favorite  {bold}Enter{/bold}:Player Detail  {bold}A-Z{/bold}:Jump Search  {bold}C-c{/bold}:Quit${scorecardHint}`;
   const detailShortcuts = '{bold}[Player Detail]{/bold}  {bold}L{/bold}:Back  {bold}1{/bold}:Events  {bold}Esc{/bold}:Back + Top  {bold}C-c{/bold}:Quit';
 
   shortcutBar.setContent(detailViewOpen ? detailShortcuts : mainShortcuts);
 }
 
-function toggleActiveOnlyFilter() {
-  showActiveOnly = !showActiveOnly;
-  updateShortcutBar();
+function cyclePlayerViewMode() {
+  const currentIndex = _.indexOf(PLAYER_VIEW_MODES, playerViewMode);
+  const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % PLAYER_VIEW_MODES.length;
+  playerViewMode = PLAYER_VIEW_MODES[nextIndex];
+  refilter('');
+}
+
+function toggleFavoriteForSelectedPlayer() {
+  if (!filteredPlayerList.length || !leaderboardMeta) {
+    return;
+  }
+
+  const selected = filteredPlayerList[table.rows.selected || 0];
+  if (!selected) {
+    return;
+  }
+
+  toggleFavoritePlayer(selected);
   refilter('');
 }
 
@@ -1663,8 +1688,9 @@ function buildTopInfoText(meta, barWidth) {
   const roundText = meta.currentRound ? `Round ${meta.currentRound}` : 'Round --';
   const locationText = meta.location || 'Location unavailable';
   const purseText = formatPurse(meta.purse);
+  const viewText = buildPlayerViewText();
 
-  const partsWithoutPurse = [eventName, roundText, locationText];
+  const partsWithoutPurse = [eventName, roundText, locationText, viewText];
   const partsWithPurse = purseText ? partsWithoutPurse.concat([purseText]) : partsWithoutPurse;
 
   const maxChars = Math.max(24, barWidth - 4);
@@ -1723,6 +1749,116 @@ function isPlayerActive(playerRow) {
   }
 
   return false;
+}
+
+function playerMatchesCurrentView(playerRow) {
+  if (playerViewMode === 'active') {
+    return isPlayerActive(playerRow);
+  }
+  if (playerViewMode === 'favorites') {
+    return isFavoritePlayer(playerRow);
+  }
+  return true;
+}
+
+function buildVisiblePlayerRow(playerRow) {
+  return {
+    POS: _.get(playerRow, 'POS', '--'),
+    FAV: isFavoritePlayer(playerRow) ? '*' : '',
+    PLAYER: _.get(playerRow, 'PLAYER', '--'),
+    SCORE: _.get(playerRow, 'SCORE', '--'),
+    TODAY: _.get(playerRow, 'TODAY', '--'),
+    THRU: _.get(playerRow, 'THRU', '--'),
+    R1: _.get(playerRow, 'R1', '--'),
+    R2: _.get(playerRow, 'R2', '--'),
+    R3: _.get(playerRow, 'R3', '--'),
+    R4: _.get(playerRow, 'R4', '--'),
+    TOT: _.get(playerRow, 'TOT', '--')
+  };
+}
+
+function getEmptyPlayerViewMessage() {
+  if (playerViewMode === 'active') {
+    return 'No active players match this view.';
+  }
+  if (playerViewMode === 'favorites') {
+    return 'No favorite players saved for this event.';
+  }
+  return 'No players match this filter.';
+}
+
+function getPlayerViewModeLabel() {
+  if (playerViewMode === 'active') {
+    return 'Active';
+  }
+  if (playerViewMode === 'favorites') {
+    return 'Favorites';
+  }
+  return 'All';
+}
+
+function buildPlayerViewText() {
+  if (playerViewMode === 'favorites') {
+    return `View: Favorites (${getFavoriteCountForSelectedEvent()})`;
+  }
+  return `View: ${getPlayerViewModeLabel()}`;
+}
+
+function getFavoriteEventKey() {
+  if (leaderboardMeta && leaderboardMeta.id) {
+    return `${leaderboardMeta.id}`;
+  }
+  if (selectedEvent && selectedEvent.id) {
+    return `${selectedEvent.id}`;
+  }
+  return '';
+}
+
+function getFavoriteStoreForSelectedEvent() {
+  const eventKey = getFavoriteEventKey();
+  if (!eventKey) {
+    return null;
+  }
+  if (!favoritePlayersByEvent[eventKey]) {
+    favoritePlayersByEvent[eventKey] = {};
+  }
+  return favoritePlayersByEvent[eventKey];
+}
+
+function getFavoritePlayerKey(playerRow) {
+  const competitorId = `${_.get(playerRow, 'COMP_ID', '')}`.trim();
+  if (competitorId) {
+    return `id:${competitorId}`;
+  }
+
+  const playerName = normalizeName(_.get(playerRow, 'PLAYER', ''));
+  return playerName ? `name:${playerName}` : '';
+}
+
+function toggleFavoritePlayer(playerRow) {
+  const store = getFavoriteStoreForSelectedEvent();
+  const playerKey = getFavoritePlayerKey(playerRow);
+  if (!store || !playerKey) {
+    return;
+  }
+
+  if (store[playerKey]) {
+    delete store[playerKey];
+    return;
+  }
+
+  store[playerKey] = true;
+}
+
+function isFavoritePlayer(playerRow) {
+  const store = getFavoriteStoreForSelectedEvent();
+  const playerKey = getFavoritePlayerKey(playerRow);
+  return !!(store && playerKey && store[playerKey]);
+}
+
+function getFavoriteCountForSelectedEvent() {
+  const store = getFavoriteStoreForSelectedEvent();
+  return store ? Object.keys(store).length : 0;
 }
 
 function normalizeName(name) {
