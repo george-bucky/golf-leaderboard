@@ -7,6 +7,7 @@ const _ = require('lodash');
 
 const url = 'https://www.espn.com/golf/leaderboard';
 const siteApiBase = 'https://site.web.api.espn.com/apis/site/v2/sports/golf';
+const selectorTourSlugs = ['pga', 'lpga', 'eur', 'liv'];
 const liveUpdateFrequencyMins = 1;
 const idleUpdateFrequencyMins = 10;
 const minimumSupportedNodeMajor = 18;
@@ -74,6 +75,7 @@ let detailBox;
 let detailHeaderBox;
 let detailContentBox;
 let shortcutBar;
+let eventSelectorBox;
 let playerList = [];
 let filteredPlayerList = [];
 let leaderboardMeta = null;
@@ -88,6 +90,14 @@ let isUpdatingLeaderboard = false;
 let refreshRequestedWhileUpdating = false;
 let currentRefreshIntervalMillis = idleUpdateFrequencyMillis;
 let scorecardCollapsed = false;
+let eventSelectorOpen = true;
+let isLoadingEventSelector = false;
+let eventSelectorOptions = [];
+let selectedEventSelectorIndex = 0;
+let selectedEvent = null;
+let eventSelectorShowingLiveOnly = true;
+let eventSelectorCards = [];
+let eventSelectorGridColumns = 1;
 const scorecardCache = {};
 const playerJumpResetMillis = 1200;
 init();
@@ -99,26 +109,51 @@ function init() {
   // ctrl-c quits, esc jumps to top of leaderboard.
   screen.key(['C-c'], () => process.exit(0));
   screen.key(['escape'], () => {
+    if (eventSelectorOpen) {
+      return;
+    }
     if (detailViewOpen) {
       closeDetailView();
     }
     jumpToTopLeaderboard();
   });
   screen.key(['`'], () => {
+    if (eventSelectorOpen) {
+      loadEventSelectorOptions();
+      return;
+    }
     requestLeaderboardUpdate();
   });
   screen.key(['/'], () => {
-    if (detailViewOpen) {
+    if (detailViewOpen || eventSelectorOpen) {
       return;
     }
     toggleActiveOnlyFilter();
+  });
+  screen.key(['1'], () => {
+    if (detailViewOpen) {
+      closeDetailView();
+    }
+    openEventSelector();
+  });
+  screen.key(['up', 'k'], () => moveEventSelectorVertical(-1));
+  screen.key(['down', 'j'], () => moveEventSelectorVertical(1));
+  screen.key(['left', 'h'], () => moveEventSelectorHorizontal(-1));
+  screen.key(['right', 'l'], () => moveEventSelectorHorizontal(1));
+  screen.key(['enter'], () => {
+    if (!eventSelectorOpen || !eventSelectorOptions.length) {
+      return;
+    }
+    activateSelectedEvent();
   });
 
   createLayout();
   screen.on('resize', () => {
     applyResponsiveLayout();
     updateTopInfoBar();
-    if (!scorecardCollapsed && filteredPlayerList.length) {
+    if (eventSelectorOpen) {
+      renderEventSelector();
+    } else if (!scorecardCollapsed && filteredPlayerList.length) {
       scheduleScorecardLoad(table.rows.selected || 0);
     }
     screen.render();
@@ -129,7 +164,7 @@ function init() {
     return;
   }
 
-  requestLeaderboardUpdate();
+  openEventSelector();
 }
 
 function isNodeVersionSupported() {
@@ -190,6 +225,22 @@ function createLayout() {
     content: 'Select a player (arrow keys or mouse) to load scorecard.'
   });
 
+  eventSelectorBox = blessed.box({
+    parent: screen,
+    tags: true,
+    mouse: true,
+    keys: true,
+    vi: true,
+    hidden: true,
+    scrollable: true,
+    alwaysScroll: true,
+    border: { type: 'line', fg: 'cyan' },
+    style: { fg: 'white', border: { fg: 'cyan' } },
+    padding: { top: 1, left: 1, right: 1, bottom: 1 },
+    label: ' Live Golf Events ',
+    content: 'Loading live events...'
+  });
+
   detailBox = blessed.box({
     parent: screen,
     top: 0,
@@ -248,6 +299,7 @@ function createLayout() {
   });
 
   table.on('click', () => table.focus());
+  eventSelectorBox.on('click', () => eventSelectorBox.focus());
 
   // Preview scorecards shortly after selection changes.
   table.rows.on('select item', (item, index) => {
@@ -271,12 +323,12 @@ function createLayout() {
 
   applyResponsiveLayout();
   updateShortcutBar();
-  table.focus();
+  eventSelectorBox.focus();
   screen.render();
 }
 
 function applyResponsiveLayout() {
-  if (!screen || !table || !topInfoBar || !scorecardBox || !shortcutBar) {
+  if (!screen || !table || !topInfoBar || !scorecardBox || !shortcutBar || !eventSelectorBox) {
     return;
   }
 
@@ -292,19 +344,25 @@ function applyResponsiveLayout() {
     scorecardWidth = Math.max(minimumScorecardPanelWidth, scorecardWidth);
     scorecardWidth = Math.min(scorecardWidth, totalWidth - 30);
   }
+  const showSelector = eventSelectorOpen && !detailViewOpen;
   const tableWidth = Math.max(30, totalWidth - scorecardWidth);
 
   scorecardCollapsed = !canShowScorecard || scorecardWidth < minimumScorecardPanelWidth;
 
   topInfoBar.top = 0;
   topInfoBar.left = 0;
-  topInfoBar.width = tableWidth;
+  topInfoBar.width = showSelector ? totalWidth : tableWidth;
   topInfoBar.height = topHeight;
 
   table.top = topHeight;
   table.left = 0;
   table.width = tableWidth;
   table.height = mainHeight;
+
+  eventSelectorBox.top = topHeight;
+  eventSelectorBox.left = 0;
+  eventSelectorBox.width = totalWidth;
+  eventSelectorBox.height = mainHeight;
 
   scorecardBox.top = 0;
   scorecardBox.left = tableWidth;
@@ -316,13 +374,29 @@ function applyResponsiveLayout() {
   shortcutBar.width = totalWidth;
   shortcutBar.height = bottomHeight;
 
-  if (scorecardCollapsed || detailViewOpen) {
+  if (detailViewOpen) {
+    topInfoBar.hide();
+    table.hide();
     scorecardBox.hide();
+    eventSelectorBox.hide();
+  } else if (showSelector) {
+    topInfoBar.show();
+    table.hide();
+    scorecardBox.hide();
+    eventSelectorBox.show();
   } else {
+    topInfoBar.show();
+    eventSelectorBox.hide();
+    table.show();
+  }
+
+  if (!showSelector && (scorecardCollapsed || detailViewOpen)) {
+    scorecardBox.hide();
+  } else if (!showSelector) {
     scorecardBox.show();
   }
 
-  if (scorecardCollapsed) {
+  if (!showSelector && scorecardCollapsed) {
     scorecardBox.setContent('Scorecard hidden on narrow terminals. Widen window for side panel.');
   }
 
@@ -332,9 +406,14 @@ function applyResponsiveLayout() {
 function updateLeaderboard() {
   const selectedPlayerNameBeforeUpdate = getSelectedPlayerName();
   isUpdatingLeaderboard = true;
-  fetchLeaderboardData()
+  fetchLeaderboardData(selectedEvent)
   .then((response) => {
     leaderboardMeta = response.meta;
+    selectedEvent = {
+      id: leaderboardMeta.id,
+      tour: leaderboardMeta.tour,
+      name: leaderboardMeta.name
+    };
     currentRefreshIntervalMillis = getRefreshIntervalMillis(leaderboardMeta);
     const now = new Date();
     playerList = response.rows || [];
@@ -376,6 +455,9 @@ function updateLeaderboard() {
 }
 
 function requestLeaderboardUpdate() {
+  if (eventSelectorOpen) {
+    return;
+  }
   if (isUpdatingLeaderboard) {
     refreshRequestedWhileUpdating = true;
     return;
@@ -383,6 +465,10 @@ function requestLeaderboardUpdate() {
   if (refreshTimer) {
     clearTimeout(refreshTimer);
     refreshTimer = null;
+  }
+  if (topInfoBar && selectedEvent && selectedEvent.name) {
+    topInfoBar.setContent(`Loading ${selectedEvent.name}...`);
+    screen.render();
   }
   updateLeaderboard();
 }
@@ -407,6 +493,347 @@ function getRefreshIntervalMillis(meta) {
   return meta && meta.isLive ? liveUpdateFrequencyMillis : idleUpdateFrequencyMillis;
 }
 
+function openEventSelector() {
+  eventSelectorOpen = true;
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+  applyResponsiveLayout();
+  updateTopInfoBar();
+  updateShortcutBar();
+  renderEventSelector();
+  if (eventSelectorBox) {
+    eventSelectorBox.focus();
+  }
+  screen.render();
+  loadEventSelectorOptions();
+}
+
+function loadEventSelectorOptions() {
+  if (isLoadingEventSelector) {
+    return;
+  }
+  isLoadingEventSelector = true;
+  updateTopInfoBar();
+  renderEventSelector();
+  screen.render();
+
+  fetchEventSelectorOptions()
+    .then((options) => {
+      eventSelectorOptions = options || [];
+      eventSelectorShowingLiveOnly = _.some(eventSelectorOptions, (entry) => !!entry.isLive);
+
+      if (selectedEvent && selectedEvent.id) {
+        const selectedIndex = _.findIndex(eventSelectorOptions, (entry) => `${entry.id}` === `${selectedEvent.id}`);
+        if (selectedIndex >= 0) {
+          selectedEventSelectorIndex = selectedIndex;
+        }
+      }
+
+      if (selectedEventSelectorIndex >= eventSelectorOptions.length) {
+        selectedEventSelectorIndex = Math.max(0, eventSelectorOptions.length - 1);
+      }
+    })
+    .catch(() => {
+      eventSelectorShowingLiveOnly = true;
+      eventSelectorOptions = [];
+      selectedEventSelectorIndex = 0;
+    })
+    .finally(() => {
+      isLoadingEventSelector = false;
+      updateTopInfoBar();
+      renderEventSelector();
+      screen.render();
+    });
+}
+
+function fetchEventSelectorOptions() {
+  return Promise.all([
+    Promise.all(_.map(selectorTourSlugs, (tour) => (
+      fetchTourEventSelectorOption(tour).catch(() => null)
+    ))),
+    fetchAdditionalPgaEventSelectorOptions().catch(() => [])
+  ])
+    .then((results) => {
+      const primary = _.compact(results[0] || []);
+      const additionalPga = _.compact(results[1] || []);
+      const merged = _.uniqBy(primary.concat(additionalPga), (entry) => `${entry.id || ''}`);
+      return sortEventSelectorOptions(merged);
+    });
+}
+
+function fetchTourEventSelectorOption(tour) {
+  const tourUrl = `${url}?tour=${encodeURIComponent(tour)}`;
+  return fetchText(tourUrl)
+    .then(parseEspnFittData)
+    .then((payload) => buildEventSelectorOption(payload, tour));
+}
+
+function fetchAdditionalPgaEventSelectorOptions() {
+  const leaderboardUrl = `${siteApiBase}/leaderboard?region=us&lang=en`;
+  return fetchJson(leaderboardUrl)
+    .then((payload) => _.compact(_.map(payload && payload.events ? payload.events : [], (event) => {
+      if (!event || _.get(event, 'league.slug') !== 'pga') {
+        return null;
+      }
+      const competition = _.first(event.competitions || []);
+      if (!competition) {
+        return null;
+      }
+      return buildEventSelectorOptionFromApiEvent(event, competition);
+    })));
+}
+
+function buildEventSelectorOptionFromApiEvent(event, competition) {
+  const courses = event.courses || [];
+  const hostCourse = _.find(courses, (course) => course && course.host) || _.first(courses) || {};
+  const competitors = _.sortBy(competition.competitors || [], (competitor) => {
+    const order = parseInt(competitor && competitor.sortOrder, 10);
+    return Number.isNaN(order) ? Number.MAX_SAFE_INTEGER : order;
+  });
+  const leader = _.first(competitors) || {};
+  const leaderName = _.get(leader, 'athlete.displayName', '');
+  const leaderScore = formatLeaderboardScore(leader);
+
+  return {
+    id: `${event.id || ''}`,
+    tour: `${_.get(event, 'league.slug', 'pga')}`.toLowerCase(),
+    tourName: _.get(event, 'league.name', 'PGA TOUR'),
+    name: event.name || event.shortName || 'Golf Event',
+    status: `${_.get(competition, 'status.type.state', _.get(event, 'status.type.state', ''))}`.toLowerCase(),
+    currentRound: _.get(competition, 'status.period') || _.get(event, 'status.period') || null,
+    leaderText: leaderName ? `${leaderName} (${leaderScore})` : '--',
+    location: formatSelectorLocation(hostCourse),
+    courseName: _.get(hostCourse, 'name', '') || 'Course unavailable',
+    isLive: isLeaderboardLive(competition.status, event.status)
+  };
+}
+
+function sortEventSelectorOptions(options) {
+  const statusOrder = { in: 0, live: 0, pre: 1, post: 2 };
+  return _.sortBy(options || [], [
+    (entry) => statusOrder[`${entry && entry.status ? entry.status : ''}`] != null ? statusOrder[`${entry.status}`] : 3,
+    (entry) => `${entry && entry.tourName ? entry.tourName : ''}`.toLowerCase(),
+    (entry) => `${entry && entry.name ? entry.name : ''}`.toLowerCase()
+  ]);
+}
+
+function parseEspnFittData(html) {
+  const markerMatch = /window\['__espnfitt__'\]\s*=\s*/.exec(html);
+  if (!markerMatch) {
+    throw new Error('Unable to locate ESPN page data');
+  }
+
+  const payloadStart = markerMatch.index + markerMatch[0].length;
+  const payloadEnd = html.indexOf('</script>', payloadStart);
+  if (payloadEnd === -1) {
+    throw new Error('Unable to parse ESPN page data');
+  }
+
+  let json = html.slice(payloadStart, payloadEnd).trim();
+  if (json.endsWith(';')) {
+    json = json.slice(0, -1);
+  }
+  return JSON.parse(json);
+}
+
+function buildEventSelectorOption(payload, fallbackTour) {
+  const leaderboard = _.get(payload, 'page.content.leaderboard');
+  if (!leaderboard || !leaderboard.id) {
+    return null;
+  }
+
+  const event = leaderboard.hdr && leaderboard.hdr.evnt ? leaderboard.hdr.evnt : {};
+  const courses = event.crse || [];
+  const hostCourse = _.find(courses, (course) => course && course.host) || _.first(courses) || {};
+  const competitors = _.sortBy(leaderboard.competitors || [], (competitor) => {
+    const order = parseInt(competitor && competitor.order, 10);
+    return Number.isNaN(order) ? Number.MAX_SAFE_INTEGER : order;
+  });
+  const leader = _.first(competitors) || {};
+  const leaderScore = normalizeScoreDisplay(leader.toPar || leader.today || '--');
+  const activeTour = _.find((leaderboard.hdr && leaderboard.hdr.tours) || [], (tour) => tour && tour.isActive);
+
+  return {
+    id: `${leaderboard.id}`,
+    tour: `${leaderboard.tour || _.get(activeTour, 'abbrev') || fallbackTour || ''}`.toLowerCase(),
+    tourName: _.get(activeTour, 'name') || leaderboard.tourName || `${fallbackTour || ''}`.toUpperCase(),
+    name: leaderboard.name || event.name || 'Golf Event',
+    status: `${leaderboard.status || ''}`.toLowerCase(),
+    currentRound: leaderboard.currentRound || null,
+    leaderText: leader.name ? `${leader.name} (${leaderScore})` : '--',
+    location: formatSelectorLocation(hostCourse),
+    courseName: _.get(hostCourse, 'name', '') || 'Course unavailable',
+    isLive: isSelectorLiveStatus(leaderboard.status)
+  };
+}
+
+function formatSelectorLocation(course) {
+  const city = _.get(course, 'addr.city') || _.get(course, 'address.city') || '';
+  const state = _.get(course, 'addr.state') || _.get(course, 'address.state') || '';
+  const country = _.get(course, 'addr.ctry') || _.get(course, 'address.country') || '';
+  const cityState = [city, state].filter(Boolean).join(', ');
+  return cityState || [city, country].filter(Boolean).join(', ') || _.get(course, 'name', 'Location unavailable');
+}
+
+function isSelectorLiveStatus(status) {
+  const text = `${status || ''}`.toLowerCase();
+  return text === 'in' || text === 'live';
+}
+
+function selectorStatusLabel(status) {
+  const text = `${status || ''}`.toLowerCase();
+  if (text === 'in' || text === 'live') {
+    return 'LIVE';
+  }
+  if (text === 'pre') {
+    return 'UP NEXT';
+  }
+  if (text === 'post') {
+    return 'FINAL';
+  }
+  return (text || '--').toUpperCase();
+}
+
+function moveEventSelectorSelection(nextIndex) {
+  if (!eventSelectorOpen || !eventSelectorOptions.length || detailViewOpen || isLoadingEventSelector) {
+    return;
+  }
+
+  const clampedIndex = Math.max(0, Math.min(eventSelectorOptions.length - 1, nextIndex));
+  if (clampedIndex === selectedEventSelectorIndex) {
+    return;
+  }
+
+  selectedEventSelectorIndex = clampedIndex;
+  renderEventSelector();
+  screen.render();
+}
+
+function moveEventSelectorHorizontal(delta) {
+  if (!eventSelectorOpen || !eventSelectorOptions.length) {
+    return;
+  }
+  moveEventSelectorSelection(selectedEventSelectorIndex + delta);
+}
+
+function moveEventSelectorVertical(deltaRows) {
+  if (!eventSelectorOpen || !eventSelectorOptions.length) {
+    return;
+  }
+  const columns = Math.max(1, eventSelectorGridColumns || 1);
+  const nextIndex = selectedEventSelectorIndex + (deltaRows * columns);
+  moveEventSelectorSelection(nextIndex);
+}
+
+function clearEventSelectorCards() {
+  _.forEach(eventSelectorCards, (card) => {
+    if (card && typeof card.detach === 'function') {
+      card.detach();
+    }
+  });
+  eventSelectorCards = [];
+}
+
+function activateSelectedEvent() {
+  const chosen = eventSelectorOptions[selectedEventSelectorIndex];
+  if (!chosen) {
+    return;
+  }
+
+  selectedEvent = { id: chosen.id, eventId: chosen.id, tour: chosen.tour, name: chosen.name };
+  eventSelectorOpen = false;
+  clearEventSelectorCards();
+  applyResponsiveLayout();
+  updateTopInfoBar();
+  updateShortcutBar();
+  table.focus();
+  screen.render();
+  requestLeaderboardUpdate();
+}
+
+function renderEventSelector() {
+  if (!eventSelectorBox || !eventSelectorOpen) {
+    return;
+  }
+
+  clearEventSelectorCards();
+
+  if (isLoadingEventSelector) {
+    eventSelectorBox.setContent('Loading live events...');
+    eventSelectorBox.setScroll(0);
+    return;
+  }
+
+  if (!eventSelectorOptions.length) {
+    eventSelectorBox.setContent('No golf events available right now.\nPress ` to try again.');
+    eventSelectorBox.setScroll(0);
+    return;
+  }
+
+  eventSelectorBox.setContent('');
+
+  const boxWidth = eventSelectorBox.width && Number(eventSelectorBox.width) > 0 ? Number(eventSelectorBox.width) : 100;
+  const boxHeight = eventSelectorBox.height && Number(eventSelectorBox.height) > 0 ? Number(eventSelectorBox.height) : 24;
+  const contentWidth = Math.max(40, boxWidth - 4);
+  const cardMinWidth = 54;
+  const cardGapX = 1;
+  const cardGapY = 1;
+  const cardHeight = 5;
+  const columns = Math.max(1, Math.floor((contentWidth + cardGapX) / (cardMinWidth + cardGapX)));
+  const cardWidth = Math.max(40, Math.floor((contentWidth - ((columns - 1) * cardGapX)) / columns));
+  eventSelectorGridColumns = columns;
+
+  _.forEach(eventSelectorOptions, (option, index) => {
+    const row = Math.floor(index / columns);
+    const col = index % columns;
+    const top = row * (cardHeight + cardGapY);
+    const left = col * (cardWidth + cardGapX);
+    const selected = index === selectedEventSelectorIndex;
+    const roundText = option.currentRound ? `Round ${option.currentRound}` : 'Round --';
+    const lineMax = Math.max(20, cardWidth - 4);
+    const lineOne = truncateText(`${selectorStatusLabel(option.status)} | ${option.tourName} | ${option.name} | ${roundText}`, lineMax);
+    const lineTwo = truncateText(`Leader: ${option.leaderText} | Course: ${option.courseName || '--'}`, lineMax);
+    const content = selected
+      ? `{bold}${lineOne}{/bold}\n${lineTwo}`
+      : `${lineOne}\n${lineTwo}`;
+
+    const card = blessed.box({
+      parent: eventSelectorBox,
+      top: top,
+      left: left,
+      width: cardWidth,
+      height: cardHeight,
+      tags: true,
+      border: { type: 'line', fg: selected ? 'green' : 'gray' },
+      style: { fg: 'white', border: { fg: selected ? 'green' : 'gray' } },
+      padding: { top: 0, left: 1, right: 1, bottom: 0 },
+      content: content
+    });
+
+    card.on('click', () => {
+      selectedEventSelectorIndex = index;
+      renderEventSelector();
+      screen.render();
+    });
+
+    eventSelectorCards.push(card);
+  });
+
+  const selectedRow = Math.floor(selectedEventSelectorIndex / columns);
+  const selectedTop = selectedRow * (cardHeight + cardGapY);
+  const selectedBottom = selectedTop + cardHeight;
+  const viewHeight = Math.max(6, boxHeight - 2);
+  const currentScroll = eventSelectorBox.getScroll ? eventSelectorBox.getScroll() : 0;
+
+  if (selectedTop < currentScroll) {
+    eventSelectorBox.setScroll(selectedTop);
+  } else if (selectedBottom > currentScroll + viewHeight) {
+    eventSelectorBox.setScroll(selectedBottom - viewHeight);
+  }
+}
+
 function refilter(filterText, options) {
   const opts = options || {};
   const preferredPlayerName = opts.preferredPlayerName || getSelectedPlayerName();
@@ -428,11 +855,11 @@ function refilter(filterText, options) {
   });
 
   const tableData = _.map(filteredPlayerList, (p) => {
-    const row = _.omit(p, ['CTRY']); // country is not shown
+    const row = _.omit(p, ['CTRY', 'COMP_ID']); // hidden internal fields
     return _.values(row);
   });
 
-  const header = _.keys(_.omit(filteredPlayerList[0] || {}, ['CTRY']));
+  const header = _.keys(_.omit(filteredPlayerList[0] || {}, ['CTRY', 'COMP_ID']));
   adjustTableColumnWidths(header);
   suppressSelectionEvents = true;
   table.setData({ data: tableData, headers: header });
@@ -588,7 +1015,7 @@ function showScorecard(index) {
     return;
   }
 
-  const competitor = findCompetitorByName(selected.PLAYER);
+  const competitor = findCompetitorForPlayerRow(selected);
   if (!competitor || !competitor.id || !leaderboardMeta) {
     scorecardBox.setContent(`No scorecard data found for ${selected.PLAYER}.`);
     screen.render();
@@ -624,7 +1051,7 @@ function openDetailView(index) {
     return;
   }
 
-  const competitor = findCompetitorByName(selected.PLAYER);
+  const competitor = findCompetitorForPlayerRow(selected);
   if (!competitor || !competitor.id || !leaderboardMeta) {
     showDetailContent({
       header: buildDetailHeader(selected),
@@ -699,10 +1126,17 @@ function updateShortcutBar() {
     return;
   }
 
+  if (eventSelectorOpen) {
+    const selectorHint = eventSelectorShowingLiveOnly ? 'Showing live events first' : 'No live events right now';
+    const selectorShortcuts = `{bold}[Event Selector]{/bold}  {bold}Arrows{/bold}:Move  {bold}Enter{/bold}:Open  {bold}\`{/bold}:Refresh  {bold}1{/bold}:Events  {bold}C-c{/bold}:Quit  {light-gray-fg}${selectorHint}{/light-gray-fg}`;
+    shortcutBar.setContent(selectorShortcuts);
+    return;
+  }
+
   const activeState = showActiveOnly ? 'ON' : 'OFF';
-  const scorecardHint = scorecardCollapsed ? '  {gray-fg}Scorecard:Hidden (widen terminal){/gray-fg}' : '';
-  const mainShortcuts = `{bold}Esc{/bold}:Top  {bold}\`{/bold}:Refresh  {bold}/{/bold}:Active ${activeState}  {bold}Enter{/bold}:Player Detail  {bold}A-Z{/bold}:Jump Search  {bold}C-c{/bold}:Quit${scorecardHint}`;
-  const detailShortcuts = '{bold}L{/bold}:Back to Leaderboard  {bold}Esc{/bold}:Back + Top  {bold}C-c{/bold}:Quit';
+  const scorecardHint = scorecardCollapsed ? '  {light-gray-fg}Scorecard:Hidden (widen terminal){/light-gray-fg}' : '';
+  const mainShortcuts = `{bold}[Leaderboard]{/bold}  {bold}1{/bold}:Events  {bold}Esc{/bold}:Top  {bold}\`{/bold}:Refresh  {bold}/{/bold}:Active ${activeState}  {bold}Enter{/bold}:Player Detail  {bold}A-Z{/bold}:Jump Search  {bold}C-c{/bold}:Quit${scorecardHint}`;
+  const detailShortcuts = '{bold}[Player Detail]{/bold}  {bold}L{/bold}:Back  {bold}1{/bold}:Events  {bold}Esc{/bold}:Back + Top  {bold}C-c{/bold}:Quit';
 
   shortcutBar.setContent(detailViewOpen ? detailShortcuts : mainShortcuts);
 }
@@ -734,7 +1168,7 @@ function formatCompactScorecard(player, summary) {
 
   lines.push(buildLegendLine());
   lines.push('');
-  lines.push('{gray-fg}Press Enter for full-screen rounds + event stats{/gray-fg}');
+  lines.push('{light-gray-fg}Press Enter for full-screen rounds + event stats{/light-gray-fg}');
   return lines.join('\n');
 }
 
@@ -780,7 +1214,7 @@ function formatFullScreenDetail(player, summary) {
 function buildDetailHeader(player, renderWidth) {
   const dividerWidth = Math.min(Math.max(60, renderWidth || 80), 120);
   const lines = [];
-  lines.push('{bold}Player Event Detail{/bold}   {gray-fg}Press L to return to leaderboard{/gray-fg}');
+  lines.push('{bold}Player Event Detail{/bold}   {light-gray-fg}Press L to return to leaderboard{/light-gray-fg}');
   lines.push(buildDivider(dividerWidth));
   lines.push(`${player.PLAYER}`);
   lines.push(`POS: ${player.POS || '--'}   SCORE: ${player.SCORE || '--'}   THRU: ${player.THRU || '--'}`);
@@ -808,14 +1242,74 @@ function getCurrentRound(rounds) {
 }
 
 function formatRoundHeader(round) {
-  return `{bold}Round ${round.period}{/bold}  Score: ${round.displayValue || '--'}  Out: ${round.outScore || '--'}  In: ${round.inScore || '--'}`;
+  const parts = [`{bold}Round ${round.period}{/bold}`, `Score: ${round.displayValue || '--'}`];
+  const out = round.outScore == null ? '--' : `${round.outScore}`;
+  const into = round.inScore == null ? '--' : `${round.inScore}`;
+  if (round.outScore != null || round.inScore != null) {
+    parts.push(`Out: ${out}`);
+    parts.push(`In: ${into}`);
+  }
+  if (round.startTee != null && `${round.startTee}` !== '') {
+    parts.push(`Start Tee: ${round.startTee}`);
+  }
+  if (round.teeTime) {
+    const teeTimeText = parseTeeTime(round.teeTime);
+    if (teeTimeText) {
+      parts.push(`Tee: ${teeTimeText}`);
+    }
+  }
+  return parts.join('  ');
 }
 
 function buildRoundRows(round, options) {
+  if (!round || !(round.linescores || []).length) {
+    return buildRoundRowsUnavailable(round);
+  }
+
   if (options && options.singleRow) {
     return buildRoundRowsSingleLine(round);
   }
   return buildRoundRowsSplit(round);
+}
+
+function buildRoundRowsUnavailable(round) {
+  const lines = [];
+  lines.push('{light-gray-fg}Hole-by-hole data is not provided for this round.{/light-gray-fg}');
+
+  const roundStatLine = buildRoundStatSummaryLine(round);
+  if (roundStatLine) {
+    lines.push(roundStatLine);
+  }
+  return lines;
+}
+
+function buildRoundStatSummaryLine(round) {
+  const stats = _.get(round, 'statistics.categories[0].stats', []);
+  if (!stats.length) {
+    return '';
+  }
+
+  const statMap = _.keyBy(stats, 'name');
+  const summary = [];
+  const addStat = (name, label) => {
+    const stat = statMap[name];
+    if (!stat || stat.displayValue == null || `${stat.displayValue}`.trim() === '') {
+      return;
+    }
+    summary.push(`${label}: ${stat.displayValue}`);
+  };
+
+  addStat('eagles', 'Eagles');
+  addStat('birdies', 'Birdies');
+  addStat('pars', 'Pars');
+  addStat('bogeys', 'Bogeys');
+  addStat('doubleBogeys', 'Double Bogeys');
+
+  if (!summary.length) {
+    return '';
+  }
+
+  return summary.join('   ');
 }
 
 function buildRoundRowsSingleLine(round) {
@@ -1127,10 +1621,35 @@ function findCompetitorByName(playerName) {
   return leaderboardMeta.competitorMap[normalizeName(playerName)] || null;
 }
 
+function findCompetitorForPlayerRow(playerRow) {
+  if (!playerRow || !leaderboardMeta) {
+    return null;
+  }
+
+  const competitorId = `${_.get(playerRow, 'COMP_ID', '')}`.trim();
+  if (competitorId && leaderboardMeta.competitorMapById && leaderboardMeta.competitorMapById[competitorId]) {
+    return leaderboardMeta.competitorMapById[competitorId];
+  }
+
+  return findCompetitorByName(playerRow.PLAYER);
+}
+
 function updateTopInfoBar() {
   if (!topInfoBar) {
     return;
   }
+  if (eventSelectorOpen) {
+    if (isLoadingEventSelector) {
+      topInfoBar.setContent('Loading live events (PGA, LPGA, DP World, LIV)...');
+      return;
+    }
+
+    const total = eventSelectorOptions.length;
+    const modeText = eventSelectorShowingLiveOnly ? 'live first' : 'latest only';
+    topInfoBar.setContent(`Select event to open leaderboard (${total} events, ${modeText})`);
+    return;
+  }
+
   if (!leaderboardMeta) {
     topInfoBar.setContent('Loading event info...');
     return;
@@ -1192,7 +1711,7 @@ function truncateText(text, maxChars) {
 }
 
 function isPlayerActive(playerRow) {
-  const competitor = findCompetitorByName(playerRow && playerRow.PLAYER);
+  const competitor = findCompetitorForPlayerRow(playerRow);
   const status = _.toLower(competitor && competitor.status);
   if (status === 'in' || status === 'live') {
     return true;
@@ -1215,16 +1734,29 @@ function normalizeName(name) {
     .trim();
 }
 
-function fetchLeaderboardMeta() {
-  return fetchLeaderboardData()
+function fetchLeaderboardMeta(options) {
+  return fetchLeaderboardData(options)
     .then((data) => data.meta)
     .catch(() => null);
 }
 
-function fetchLeaderboardData() {
-  const leaderboardUrl = `${siteApiBase}/leaderboard?region=us&lang=en`;
+function fetchLeaderboardData(options) {
+  const opts = options || {};
+  const selectedEventId = opts.eventId || opts.id || null;
+  let leaderboardUrl = `${siteApiBase}/leaderboard?region=us&lang=en`;
+  if (selectedEventId) {
+    leaderboardUrl += `&event=${encodeURIComponent(selectedEventId)}`;
+  }
+
   return fetchJson(leaderboardUrl).then((payload) => {
-    const event = pickPrimaryEvent(payload && payload.events);
+    const events = payload && payload.events ? payload.events : [];
+    let event = null;
+    if (selectedEventId) {
+      event = _.find(events, (entry) => `${entry && entry.id}` === `${selectedEventId}`) || null;
+    }
+    if (!event) {
+      event = pickPrimaryEvent(events);
+    }
     if (!event) {
       throw new Error('Unable to locate event in leaderboard response');
     }
@@ -1271,6 +1803,18 @@ function buildLeaderboardMeta(event, competition) {
     };
     return memo;
   }, {});
+  const competitorMapById = _.reduce(competitors, (memo, competitor) => {
+    const competitorId = `${competitor && competitor.id ? competitor.id : ''}`.trim();
+    if (!competitorId) {
+      return memo;
+    }
+    memo[competitorId] = {
+      id: competitorId,
+      status: _.get(competitor, 'status.type.state', ''),
+      name: _.get(competitor, 'athlete.displayName', '')
+    };
+    return memo;
+  }, {});
 
   return {
     id: `${event.id || ''}`,
@@ -1281,7 +1825,8 @@ function buildLeaderboardMeta(event, competition) {
     cityState: cityState,
     purse: purse,
     isLive: isLeaderboardLive(competition.status, event.status),
-    competitorMap: competitorMap
+    competitorMap: competitorMap,
+    competitorMapById: competitorMapById
   };
 }
 
@@ -1298,6 +1843,7 @@ function buildLeaderboardRows(competitors, competitionStatus) {
     const roundThree = findRoundScoreByPeriod(competitor.linescores, 3);
     const roundFour = findRoundScoreByPeriod(competitor.linescores, 4);
     return {
+      COMP_ID: `${competitor.id || ''}`,
       POS: formatLeaderboardPos(_.get(competitor, 'status.position')),
       PLAYER: _.get(competitor, 'athlete.displayName', '--'),
       SCORE: formatLeaderboardScore(competitor),
@@ -1487,8 +2033,21 @@ function isLeaderboardLive(competitionStatus, eventStatus) {
 }
 
 function fetchCompetitorSummary(tour, eventId, competitorId) {
-  const summaryUrl = `${siteApiBase}/${encodeURIComponent(tour)}/leaderboard/${encodeURIComponent(eventId)}/competitorsummary/${encodeURIComponent(competitorId)}?region=us&lang=en`;
-  return fetchJson(summaryUrl);
+  const tourCandidates = _.uniq([
+    `${tour || ''}`.toLowerCase(),
+    `${_.get(selectedEvent, 'tour', '')}`.toLowerCase()
+  ].filter(Boolean));
+
+  const tryFetch = (index) => {
+    if (index >= tourCandidates.length) {
+      return Promise.reject(new Error('No competitor summary found for selected event'));
+    }
+    const tourSlug = tourCandidates[index];
+    const summaryUrl = `${siteApiBase}/${encodeURIComponent(tourSlug)}/leaderboard/${encodeURIComponent(eventId)}/competitorsummary/${encodeURIComponent(competitorId)}?region=us&lang=en`;
+    return fetchJson(summaryUrl).catch(() => tryFetch(index + 1));
+  };
+
+  return tryFetch(0);
 }
 
 function fetchJson(sourceUrl) {
