@@ -1,19 +1,111 @@
-# golf-leaderboard
-Display the leaderboard of the current week's PGA tournament in your terminal.
+# Fore Golf Scores
 
-```
-git clone https://github.com/maxthyen/golf-leaderboard.git
+Follow live golf events in your terminal with Fore Golf Scores.
+
+This app pulls current leaderboard data from ESPN and gives you a fast keyboard-friendly way to switch events, follow players, open scorecards, and check round details without leaving the terminal.
+
+## Features
+
+- Browse current PGA, LPGA, DP World Tour, and LIV events from the built-in event selector.
+- Open a live or completed leaderboard with round-by-round scoring columns.
+- Preview the selected player's scorecard in a side panel on wider terminals.
+- Open a full-screen player detail view with every round and event stats.
+- Mark favorite players for the current event and switch between all, active, and favorites-only views.
+- Jump straight to a player by typing the start of their name.
+- Auto-refresh more often when an event is live and less often when it is not.
+- No API key or login required.
+
+## Requirements
+
+- Node 20 is the easiest option for this project. The repo includes a `.nvmrc` file for that version.
+- An internet connection is required because leaderboard data comes from ESPN.
+- A wider terminal gives the best experience. The side scorecard panel shows when the terminal is wide enough.
+
+## Launch
+
+Clone the repo, then run:
+
+```sh
+git clone https://github.com/george-bucky/golf-leaderboard.git
 cd golf-leaderboard
+nvm use
 npm install
 npm start
 ```
 
-## Interaction
-- Type in the top filter box to narrow the player list.
-- Move through players with arrow keys (or click).
-- When a player is selected, a scorecard panel shows round-by-round hole scores.
+If you already use Node 20, you can skip `nvm use`.
 
-This project was mostly an excuse to demonstrate the use of [table-scraper](https://github.com/maxthyen/table-scraper) 
-and experiment with [blessed](https://github.com/chjj/blessed) and [blessed-contrb](https://github.com/yaronn/blessed-contrib).
+## Homebrew
 
-![golf-leaderboard screenshot](https://i.imgur.com/vnkpNp0.png)
+You can install it with Homebrew as `fore`.
+
+The smoothest path is:
+
+```sh
+brew tap george-bucky/fore
+brew install fore
+fore
+```
+
+There is also a one-line install:
+
+```sh
+brew install george-bucky/fore/fore
+```
+
+The tap repo is:
+
+- `https://github.com/george-bucky/homebrew-fore`
+
+This repo also includes the local source files behind that setup:
+
+- the app exposes a real `fore` command
+- there is a Homebrew formula template at `packaging/homebrew/fore.rb`
+- there are setup notes at `docs/homebrew.md`
+
+## Controls
+
+### Event Selector
+
+- `Arrow keys` or `h j k l`: move between events
+- `Enter`: open the selected event
+- `` ` ``: refresh the event list
+- `1`: reopen the event selector
+- `Ctrl+C`: quit
+
+### Leaderboard
+
+- `Arrow keys` or mouse: move through players
+- `Enter`: open the full player detail screen
+- `/`: switch between all players, active players, and favorites
+- `;`: add or remove the selected player as a favorite
+- `A-Z`: jump to players by typing the start of a name
+- `Esc`: jump back to the top of the leaderboard
+- `` ` ``: refresh the current leaderboard
+- `1`: go back to event selection
+
+### Player Detail
+
+- `L`: return to the leaderboard
+- `Esc`: close detail and jump back to the top
+- `1`: go back to event selection
+
+## Screenshots
+
+### Event Selector
+
+![Event selector screenshot](docs/screenshots/event-selector.svg)
+
+### Leaderboard With Scorecard
+
+![Leaderboard screenshot](docs/screenshots/leaderboard-view.svg)
+
+### Full Player Detail
+
+![Player detail screenshot](docs/screenshots/player-detail.svg)
+
+## Notes
+
+- Data is pulled from ESPN's public golf endpoints.
+- Favorites are kept in memory for the current app session.
+- `npm test` runs a few small regression checks, but the main way to check UI changes is still by running the app.

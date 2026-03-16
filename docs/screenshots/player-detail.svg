@@ -1,0 +1,36 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Fore Golf Scores player detail screenshot</title>
+  <desc id="desc">Illustrated terminal screenshot showing the full player detail view with rounds and event stats.</desc>
+  <rect width="1200" height="760" rx="28" fill="#0b1220"/>
+  <rect x="24" y="24" width="1152" height="712" rx="22" fill="#111827" stroke="#1f2937" stroke-width="2"/>
+  <circle cx="62" cy="58" r="8" fill="#ef4444"/>
+  <circle cx="88" cy="58" r="8" fill="#f59e0b"/>
+  <circle cx="114" cy="58" r="8" fill="#10b981"/>
+  <text x="600" y="64" text-anchor="middle" fill="#9ca3af" font-family="Menlo, Monaco, Consolas, monospace" font-size="20">Fore Golf Scores</text>
+
+  <rect x="52" y="92" width="1096" height="536" rx="10" fill="#0f172a" stroke="#22d3ee" stroke-width="2"/>
+  <text x="78" y="126" fill="#f8fafc" font-family="Menlo, Monaco, Consolas, monospace" font-size="24">Player Detail</text>
+  <text x="78" y="168" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="20">Scottie Scheffler | POS 1 | SCORE -11 | THRU 15</text>
+  <text x="78" y="208" fill="#93c5fd" font-family="Menlo, Monaco, Consolas, monospace" font-size="20">All Rounds</text>
+  <text x="78" y="244" fill="#94a3b8" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">---------------------------------------------------------------</text>
+  <text x="78" y="278" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">Round 1 | 67 (-5)</text>
+  <text x="78" y="308" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="17">HOLE   1  2  3  4  5  6  7  8  9  OUT  10 11 12 13 14 15 16 17 18   TOT</text>
+  <text x="78" y="338" fill="#94a3b8" font-family="Menlo, Monaco, Consolas, monospace" font-size="17">PAR    4  5  3  4  4  4  4  3  5   36   4  5  4  3  4  4  5  3  4    72</text>
+  <text x="78" y="368" fill="#22c55e" font-family="Menlo, Monaco, Consolas, monospace" font-size="17">SCORE  4  4  3  4  4  3  4  2  5   33   4  5  4  3  4  4  4  3  3    67</text>
+
+  <text x="78" y="422" fill="#94a3b8" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">---------------------------------------------------------------</text>
+  <text x="78" y="456" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">Round 2 | 69 (-3)</text>
+  <text x="78" y="486" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="17">...additional round rows continue here...</text>
+
+  <text x="700" y="208" fill="#93c5fd" font-family="Menlo, Monaco, Consolas, monospace" font-size="20">Event Stats</text>
+  <rect x="700" y="236" width="396" height="272" rx="10" fill="#111827" stroke="#4b5563" stroke-width="2"/>
+  <text x="724" y="276" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">Score To Par           -11</text>
+  <text x="724" y="312" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">Driving Distance       308.2</text>
+  <text x="724" y="348" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">Driving Accuracy %     71.4</text>
+  <text x="724" y="384" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">GIR                    83.3</text>
+  <text x="724" y="420" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">Birdies                14</text>
+  <text x="724" y="456" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">Bogeys                 3</text>
+
+  <rect x="52" y="652" width="1096" height="54" rx="8" fill="#111827" stroke="#4b5563" stroke-width="2"/>
+  <text x="78" y="686" fill="#f8fafc" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">[Player Detail]  L:Back  1:Events  Esc:Back + Top  C-c:Quit</text>
+</svg>

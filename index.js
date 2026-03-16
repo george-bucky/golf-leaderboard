@@ -7,9 +7,10 @@ const _ = require('lodash');
 
 const url = 'https://www.espn.com/golf/leaderboard';
 const siteApiBase = 'https://site.web.api.espn.com/apis/site/v2/sports/golf';
-const selectorTourSlugs = ['pga', 'lpga', 'eur', 'liv'];
+const selectorTourSlugs = ['lpga', 'eur', 'liv'];
 const liveUpdateFrequencyMins = 1;
 const idleUpdateFrequencyMins = 10;
+const eventSelectorCacheMillis = 60 * 1000;
 const minimumSupportedNodeMajor = 18;
 const minimumScorecardPanelWidth = 44;
 const minimumScreenWidthWithScorecard = 110;
@@ -99,10 +100,12 @@ let selectedEvent = null;
 let eventSelectorShowingLiveOnly = true;
 let eventSelectorCards = [];
 let eventSelectorGridColumns = 1;
+let eventSelectorLastLoadedAt = 0;
+let eventSelectorLoadPromise = null;
+let eventSelectorCardLayoutKey = '';
 const favoritePlayersByEvent = {};
 const scorecardCache = {};
 const playerJumpResetMillis = 1200;
-init();
 
 function init() {
   screen = blessed.screen({ smartCSR: true, log: `${__dirname}/leaderboard.log` });
@@ -121,7 +124,7 @@ function init() {
   });
   screen.key(['`'], () => {
     if (eventSelectorOpen) {
-      loadEventSelectorOptions();
+      loadEventSelectorOptions({ forceRefresh: true });
       return;
     }
     requestLeaderboardUpdate();
@@ -518,18 +521,30 @@ function openEventSelector() {
   loadEventSelectorOptions();
 }
 
-function loadEventSelectorOptions() {
+function loadEventSelectorOptions(options) {
+  const opts = options || {};
+  const hasFreshCache = eventSelectorOptions.length > 0 && (Date.now() - eventSelectorLastLoadedAt) < eventSelectorCacheMillis;
+  if (!opts.forceRefresh && hasFreshCache) {
+    updateTopInfoBar();
+    renderEventSelector();
+    screen.render();
+    return Promise.resolve(eventSelectorOptions);
+  }
+
   if (isLoadingEventSelector) {
-    return;
+    return eventSelectorLoadPromise || Promise.resolve(eventSelectorOptions);
   }
   isLoadingEventSelector = true;
   updateTopInfoBar();
-  renderEventSelector();
+  if (!eventSelectorOptions.length) {
+    renderEventSelector();
+  }
   screen.render();
 
-  fetchEventSelectorOptions()
+  eventSelectorLoadPromise = fetchEventSelectorOptions()
     .then((options) => {
       eventSelectorOptions = options || [];
+      eventSelectorLastLoadedAt = Date.now();
       eventSelectorShowingLiveOnly = _.some(eventSelectorOptions, (entry) => !!entry.isLive);
 
       if (selectedEvent && selectedEvent.id) {
@@ -544,31 +559,60 @@ function loadEventSelectorOptions() {
       }
     })
     .catch(() => {
-      eventSelectorShowingLiveOnly = true;
-      eventSelectorOptions = [];
-      selectedEventSelectorIndex = 0;
+      if (!eventSelectorOptions.length) {
+        eventSelectorShowingLiveOnly = true;
+        eventSelectorOptions = [];
+        selectedEventSelectorIndex = 0;
+        eventSelectorLastLoadedAt = 0;
+      }
     })
     .finally(() => {
       isLoadingEventSelector = false;
+      eventSelectorLoadPromise = null;
       updateTopInfoBar();
       renderEventSelector();
       screen.render();
     });
+
+  return eventSelectorLoadPromise;
 }
 
 function fetchEventSelectorOptions() {
   return Promise.all([
+    loadPrimaryEventSelectorOptionsWithFallback(fetchPrimaryEventSelectorOptions, fetchTourEventSelectorOption),
     Promise.all(_.map(selectorTourSlugs, (tour) => (
       fetchTourEventSelectorOption(tour).catch(() => null)
-    ))),
-    fetchAdditionalPgaEventSelectorOptions().catch(() => [])
+    )))
   ])
     .then((results) => {
       const primary = _.compact(results[0] || []);
-      const additionalPga = _.compact(results[1] || []);
-      const merged = _.uniqBy(primary.concat(additionalPga), (entry) => `${entry.id || ''}`);
+      const additionalTours = _.compact(results[1] || []);
+      const merged = _.uniqBy(primary.concat(additionalTours), (entry) => `${entry.id || ''}`);
       return sortEventSelectorOptions(merged);
     });
+}
+
+function loadPrimaryEventSelectorOptionsWithFallback(primaryFetcher, tourFetcher) {
+  const fetchPrimary = primaryFetcher || fetchPrimaryEventSelectorOptions;
+  const fetchTour = tourFetcher || fetchTourEventSelectorOption;
+
+  return fetchPrimary().catch(() => (
+    fetchTour('pga')
+      .then((option) => _.compact([option]))
+      .catch(() => [])
+  ));
+}
+
+function fetchPrimaryEventSelectorOptions() {
+  const leaderboardUrl = `${siteApiBase}/leaderboard?region=us&lang=en`;
+  return fetchJson(leaderboardUrl)
+    .then((payload) => _.compact(_.map(payload && payload.events ? payload.events : [], (event) => {
+      const competition = _.first(event && event.competitions ? event.competitions : []);
+      if (!event || !competition) {
+        return null;
+      }
+      return buildEventSelectorOptionFromApiEvent(event, competition);
+    })));
 }
 
 function fetchTourEventSelectorOption(tour) {
@@ -576,21 +620,6 @@ function fetchTourEventSelectorOption(tour) {
   return fetchText(tourUrl)
     .then(parseEspnFittData)
     .then((payload) => buildEventSelectorOption(payload, tour));
-}
-
-function fetchAdditionalPgaEventSelectorOptions() {
-  const leaderboardUrl = `${siteApiBase}/leaderboard?region=us&lang=en`;
-  return fetchJson(leaderboardUrl)
-    .then((payload) => _.compact(_.map(payload && payload.events ? payload.events : [], (event) => {
-      if (!event || _.get(event, 'league.slug') !== 'pga') {
-        return null;
-      }
-      const competition = _.first(event.competitions || []);
-      if (!competition) {
-        return null;
-      }
-      return buildEventSelectorOptionFromApiEvent(event, competition);
-    })));
 }
 
 function buildEventSelectorOptionFromApiEvent(event, competition) {
@@ -714,8 +743,11 @@ function moveEventSelectorSelection(nextIndex) {
     return;
   }
 
+  const previousIndex = selectedEventSelectorIndex;
   selectedEventSelectorIndex = clampedIndex;
-  renderEventSelector();
+  updateEventSelectorCard(previousIndex);
+  updateEventSelectorCard(selectedEventSelectorIndex);
+  syncEventSelectorScroll();
   screen.render();
 }
 
@@ -742,6 +774,7 @@ function clearEventSelectorCards() {
     }
   });
   eventSelectorCards = [];
+  eventSelectorCardLayoutKey = '';
 }
 
 function activateSelectedEvent() {
@@ -767,15 +800,15 @@ function renderEventSelector() {
     return;
   }
 
-  clearEventSelectorCards();
-
-  if (isLoadingEventSelector) {
+  if (isLoadingEventSelector && !eventSelectorOptions.length) {
+    clearEventSelectorCards();
     eventSelectorBox.setContent('Loading live events...');
     eventSelectorBox.setScroll(0);
     return;
   }
 
   if (!eventSelectorOptions.length) {
+    clearEventSelectorCards();
     eventSelectorBox.setContent('No golf events available right now.\nPress ` to try again.');
     eventSelectorBox.setScroll(0);
     return;
@@ -792,47 +825,103 @@ function renderEventSelector() {
   const cardHeight = 5;
   const columns = Math.max(1, Math.floor((contentWidth + cardGapX) / (cardMinWidth + cardGapX)));
   const cardWidth = Math.max(40, Math.floor((contentWidth - ((columns - 1) * cardGapX)) / columns));
+  const layoutKey = [columns, cardWidth, cardHeight, eventSelectorOptions.length].join(':');
   eventSelectorGridColumns = columns;
 
+  if (layoutKey !== eventSelectorCardLayoutKey) {
+    clearEventSelectorCards();
+    eventSelectorCardLayoutKey = layoutKey;
+  }
+
   _.forEach(eventSelectorOptions, (option, index) => {
-    const row = Math.floor(index / columns);
-    const col = index % columns;
-    const top = row * (cardHeight + cardGapY);
-    const left = col * (cardWidth + cardGapX);
-    const selected = index === selectedEventSelectorIndex;
-    const roundText = option.currentRound ? `Round ${option.currentRound}` : 'Round --';
-    const lineMax = Math.max(20, cardWidth - 4);
-    const lineOne = truncateText(`${selectorStatusLabel(option.status)} | ${option.tourName} | ${option.name} | ${roundText}`, lineMax);
-    const lineTwo = truncateText(`Leader: ${option.leaderText} | Course: ${option.courseName || '--'}`, lineMax);
-    const content = selected
-      ? `{bold}${lineOne}{/bold}\n${lineTwo}`
-      : `${lineOne}\n${lineTwo}`;
+    if (!eventSelectorCards[index]) {
+      const card = blessed.box({
+        parent: eventSelectorBox,
+        tags: true,
+        border: { type: 'line', fg: 'gray' },
+        style: { fg: 'white', border: { fg: 'gray' } },
+        padding: { top: 0, left: 1, right: 1, bottom: 0 },
+        content: ''
+      });
 
-    const card = blessed.box({
-      parent: eventSelectorBox,
-      top: top,
-      left: left,
-      width: cardWidth,
-      height: cardHeight,
-      tags: true,
-      border: { type: 'line', fg: selected ? 'green' : 'gray' },
-      style: { fg: 'white', border: { fg: selected ? 'green' : 'gray' } },
-      padding: { top: 0, left: 1, right: 1, bottom: 0 },
-      content: content
+      card.on('click', () => {
+        const previousIndex = selectedEventSelectorIndex;
+        selectedEventSelectorIndex = index;
+        updateEventSelectorCard(previousIndex);
+        updateEventSelectorCard(selectedEventSelectorIndex);
+        syncEventSelectorScroll();
+        screen.render();
+      });
+
+      eventSelectorCards[index] = card;
+    }
+
+    updateEventSelectorCard(index, {
+      columns: columns,
+      cardWidth: cardWidth,
+      cardHeight: cardHeight,
+      cardGapX: cardGapX,
+      cardGapY: cardGapY
     });
-
-    card.on('click', () => {
-      selectedEventSelectorIndex = index;
-      renderEventSelector();
-      screen.render();
-    });
-
-    eventSelectorCards.push(card);
   });
 
-  const selectedRow = Math.floor(selectedEventSelectorIndex / columns);
-  const selectedTop = selectedRow * (cardHeight + cardGapY);
-  const selectedBottom = selectedTop + cardHeight;
+  syncEventSelectorScroll();
+}
+
+function updateEventSelectorCard(index, layout) {
+  const option = eventSelectorOptions[index];
+  const card = eventSelectorCards[index];
+  if (!option || !card) {
+    return;
+  }
+
+  const activeLayout = layout || getEventSelectorLayout();
+  const row = Math.floor(index / activeLayout.columns);
+  const col = index % activeLayout.columns;
+  const selected = index === selectedEventSelectorIndex;
+  const roundText = option.currentRound ? `Round ${option.currentRound}` : 'Round --';
+  const lineMax = Math.max(20, activeLayout.cardWidth - 4);
+  const lineOne = truncateText(`${selectorStatusLabel(option.status)} | ${option.tourName} | ${option.name} | ${roundText}`, lineMax);
+  const lineTwo = truncateText(`Leader: ${option.leaderText} | Course: ${option.courseName || '--'}`, lineMax);
+
+  card.top = row * (activeLayout.cardHeight + activeLayout.cardGapY);
+  card.left = col * (activeLayout.cardWidth + activeLayout.cardGapX);
+  card.width = activeLayout.cardWidth;
+  card.height = activeLayout.cardHeight;
+  card.border.fg = selected ? 'green' : 'gray';
+  card.style.border.fg = selected ? 'green' : 'gray';
+  card.setContent(selected ? `{bold}${lineOne}{/bold}\n${lineTwo}` : `${lineOne}\n${lineTwo}`);
+}
+
+function getEventSelectorLayout() {
+  const boxWidth = eventSelectorBox.width && Number(eventSelectorBox.width) > 0 ? Number(eventSelectorBox.width) : 100;
+  const contentWidth = Math.max(40, boxWidth - 4);
+  const cardMinWidth = 54;
+  const cardGapX = 1;
+  const cardGapY = 1;
+  const cardHeight = 5;
+  const columns = Math.max(1, Math.floor((contentWidth + cardGapX) / (cardMinWidth + cardGapX)));
+  const cardWidth = Math.max(40, Math.floor((contentWidth - ((columns - 1) * cardGapX)) / columns));
+
+  return {
+    columns: columns,
+    cardWidth: cardWidth,
+    cardHeight: cardHeight,
+    cardGapX: cardGapX,
+    cardGapY: cardGapY
+  };
+}
+
+function syncEventSelectorScroll() {
+  if (!eventSelectorBox || !eventSelectorOptions.length) {
+    return;
+  }
+
+  const boxHeight = eventSelectorBox.height && Number(eventSelectorBox.height) > 0 ? Number(eventSelectorBox.height) : 24;
+  const layout = getEventSelectorLayout();
+  const selectedRow = Math.floor(selectedEventSelectorIndex / layout.columns);
+  const selectedTop = selectedRow * (layout.cardHeight + layout.cardGapY);
+  const selectedBottom = selectedTop + layout.cardHeight;
   const viewHeight = Math.max(6, boxHeight - 2);
   const currentScroll = eventSelectorBox.getScroll ? eventSelectorBox.getScroll() : 0;
 
@@ -2212,3 +2301,16 @@ function fetchText(sourceUrl) {
     }).on('error', reject);
   });
 }
+
+function main() {
+  init();
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  loadPrimaryEventSelectorOptionsWithFallback: loadPrimaryEventSelectorOptionsWithFallback,
+  main: main
+};
