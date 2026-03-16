@@ -1,15 +1,19 @@
 {
-  "name": "golf-leaderboard",
+  "name": "fore-golf-scores",
   "version": "0.0.1",
-  "description": "Display the current week's golf standings in the terminal",
+  "description": "Fore Golf Scores is a terminal app for live golf events, favorites, and player scorecards",
   "main": "index.js",
+  "bin": {
+    "fore": "bin/fore",
+    "fore-golf-scores": "bin/fore"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/maxthyen/golf-leaderboard.git"
+    "url": "https://github.com/george-bucky/golf-leaderboard.git"
   },
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18.0"
@@ -19,7 +23,6 @@
     "pga",
     "leaderboard"
   ],
-  "author": "max thyen",
   "license": "ISC",
   "dependencies": {
     "blessed": "^0.1.81",

@@ -1,0 +1,41 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Fore Golf Scores leaderboard screenshot</title>
+  <desc id="desc">Illustrated terminal screenshot showing the leaderboard table and side scorecard panel.</desc>
+  <rect width="1200" height="760" rx="28" fill="#0b1220"/>
+  <rect x="24" y="24" width="1152" height="712" rx="22" fill="#111827" stroke="#1f2937" stroke-width="2"/>
+  <circle cx="62" cy="58" r="8" fill="#ef4444"/>
+  <circle cx="88" cy="58" r="8" fill="#f59e0b"/>
+  <circle cx="114" cy="58" r="8" fill="#10b981"/>
+  <text x="600" y="64" text-anchor="middle" fill="#9ca3af" font-family="Menlo, Monaco, Consolas, monospace" font-size="20">Fore Golf Scores</text>
+
+  <rect x="52" y="92" width="718" height="58" rx="8" fill="#0f172a" stroke="#22d3ee" stroke-width="2"/>
+  <text x="74" y="127" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">The Players Championship | Round 3 | Ponte Vedra Beach, FL | View: Favorites (2)</text>
+
+  <rect x="52" y="168" width="718" height="460" rx="10" fill="#0f172a" stroke="#22d3ee" stroke-width="2"/>
+  <text x="78" y="202" fill="#93c5fd" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">POS  FAV  PLAYER                  SCORE  TODAY  THRU  R1  R2  R3  R4   TOT</text>
+  <rect x="70" y="220" width="682" height="44" rx="6" fill="#166534"/>
+  <text x="86" y="248" fill="#f8fafc" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">1    *    Scottie Scheffler       -11    -3     15    67  69  34  --   170</text>
+  <text x="86" y="288" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">2    *    Rory McIlroy            -9     -2     14    68  70  35  --   173</text>
+  <text x="86" y="328" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">3         Xander Schauffele       -8     -1     15    69  68  36  --   173</text>
+  <text x="86" y="368" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">T4        Wyndham Clark           -6     E      13    70  68  38  --   176</text>
+  <text x="86" y="408" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">T4        Collin Morikawa         -6     -2     14    71  67  35  --   173</text>
+  <text x="86" y="448" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">T6        Tommy Fleetwood         -5     -1     14    69  70  36  --   175</text>
+  <text x="86" y="488" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">T6        Ludvig Aberg            -5     -2     12    70  69  34  --   173</text>
+
+  <rect x="790" y="92" width="358" height="536" rx="10" fill="#0f172a" stroke="#facc15" stroke-width="2"/>
+  <text x="816" y="126" fill="#fde68a" font-family="Menlo, Monaco, Consolas, monospace" font-size="22">Player Scorecard</text>
+  <text x="816" y="168" fill="#f8fafc" font-family="Menlo, Monaco, Consolas, monospace" font-size="20">Scottie Scheffler</text>
+  <text x="816" y="198" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">POS: 1   SCORE: -11   THRU: 15</text>
+  <text x="816" y="246" fill="#93c5fd" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">Current Round</text>
+  <text x="816" y="280" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="17">HOLE   1  2  3  4  5  6  7  8  9  OUT</text>
+  <text x="816" y="312" fill="#94a3b8" font-family="Menlo, Monaco, Consolas, monospace" font-size="17">PAR    4  5  3  4  4  4  4  3  5   36</text>
+  <text x="816" y="344" fill="#22c55e" font-family="Menlo, Monaco, Consolas, monospace" font-size="17">SCORE  4  4  3  4  3  4  4  2  5   33</text>
+  <text x="816" y="394" fill="#e5e7eb" font-family="Menlo, Monaco, Consolas, monospace" font-size="17">HOLE  10 11 12 13 14 15 16 17 18   IN</text>
+  <text x="816" y="426" fill="#94a3b8" font-family="Menlo, Monaco, Consolas, monospace" font-size="17">PAR    4  5  4  3  4  4  5  3  4   36</text>
+  <text x="816" y="458" fill="#22c55e" font-family="Menlo, Monaco, Consolas, monospace" font-size="17">SCORE  4  5  4  2  4  4  -- -- --   23</text>
+  <text x="816" y="512" fill="#f8fafc" font-family="Menlo, Monaco, Consolas, monospace" font-size="16">Legend: Eagle  Birdie  Bogey  DBL+</text>
+  <text x="816" y="548" fill="#94a3b8" font-family="Menlo, Monaco, Consolas, monospace" font-size="16">Press Enter for full-screen rounds and stats</text>
+
+  <rect x="52" y="652" width="1096" height="54" rx="8" fill="#111827" stroke="#4b5563" stroke-width="2"/>
+  <text x="78" y="686" fill="#f8fafc" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">[Leaderboard]  1:Events  Esc:Top  `:Refresh  /:View Favorites  ;:Favorite  Enter:Player Detail</text>
+</svg>

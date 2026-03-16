@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+'use strict';
+
+const packageJson = require('../package.json');
+
+function showHelp() {
+  process.stdout.write(
+    'Fore Golf Scores\n\n' +
+    'Usage:\n' +
+    '  fore\n' +
+    '  fore --help\n' +
+    '  fore --version\n'
+  );
+}
+
+const args = process.argv.slice(2);
+
+if (args.includes('--help') || args.includes('-h')) {
+  showHelp();
+  process.exit(0);
+}
+
+if (args.includes('--version') || args.includes('-v')) {
+  process.stdout.write(`${packageJson.version}\n`);
+  process.exit(0);
+}
+
+require('../index').main();
