@@ -94,15 +94,18 @@ This repo also includes the local source files behind that setup:
 
 ### Event Selector
 
-![Event selector screenshot](docs/screenshots/event-selector.svg)
+<img width="1199" height="546" alt="image" src="https://github.com/user-attachments/assets/5b2c4a71-131c-43fe-bf24-b5ef6afad1cb" />
+
 
 ### Leaderboard With Scorecard
 
-![Leaderboard screenshot](docs/screenshots/leaderboard-view.svg)
+<img width="1198" height="540" alt="image" src="https://github.com/user-attachments/assets/e70ac8a8-e8b0-44f3-bddc-a7c12dc6c9d0" />
+
 
 ### Full Player Detail
 
-![Player detail screenshot](docs/screenshots/player-detail.svg)
+<img width="1019" height="1179" alt="image" src="https://github.com/user-attachments/assets/4f2825a0-fb4c-43af-9e12-92d80f472378" />
+
 
 ## Notes
 
