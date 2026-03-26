@@ -1,4 +1,4 @@
-# Fore Golf Scores
+# Fore! Golf Scores
 
 Follow live golf events in your terminal with Fore Golf Scores.
 
