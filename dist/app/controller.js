@@ -10,6 +10,7 @@ const espn_1 = require("../data/espn");
 const leaderboard_1 = require("../format/leaderboard");
 const scorecard_1 = require("../format/scorecard");
 const store_1 = require("../state/store");
+const resize_1 = require("./resize");
 const playerTable_1 = require("./playerTable");
 const playerSummary_1 = require("./playerSummary");
 const detailView_1 = require("../ui/detailView");
@@ -34,15 +35,13 @@ class AppController {
         this.widgets.eventSelectorBox.focus();
         this.widgets.screen.render();
         this.widgets.screen.on('resize', () => {
-            (0, layout_1.applyResponsiveLayout)(this.widgets, this.state);
-            this.updateTopInfoBar();
-            if (this.state.eventSelectorOpen) {
-                this.renderEventSelector();
-            }
-            else if (!this.state.scorecardCollapsed && this.state.filteredPlayerList.length) {
-                this.scheduleScorecardLoad(this.widgets.table.rows.selected || 0);
-            }
-            this.widgets.screen.render();
+            (0, resize_1.handleScreenResize)(this.widgets, this.state, {
+                applyLayout: () => (0, layout_1.applyResponsiveLayout)(this.widgets, this.state),
+                updateTopInfoBar: () => this.updateTopInfoBar(),
+                updateShortcutBar: () => this.updateShortcutBar(),
+                renderEventSelector: () => this.renderEventSelector(),
+                scheduleScorecardLoad: (index) => this.scheduleScorecardLoad(index)
+            });
         });
         if (!this.isNodeVersionSupported()) {
             this.showNodeVersionMessage();

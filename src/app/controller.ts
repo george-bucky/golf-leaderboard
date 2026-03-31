@@ -19,6 +19,7 @@ import {
   toggleFavoritePlayer
 } from '../state/store';
 import { AppState, DetailContent, Widgets } from '../types';
+import { handleScreenResize } from './resize';
 import {
   applyTableColumnWidths,
   buildTableData,
@@ -61,14 +62,13 @@ class AppController {
     this.widgets.screen.render();
 
     this.widgets.screen.on('resize', () => {
-      applyResponsiveLayout(this.widgets, this.state);
-      this.updateTopInfoBar();
-      if (this.state.eventSelectorOpen) {
-        this.renderEventSelector();
-      } else if (!this.state.scorecardCollapsed && this.state.filteredPlayerList.length) {
-        this.scheduleScorecardLoad(this.widgets.table.rows.selected || 0);
-      }
-      this.widgets.screen.render();
+      handleScreenResize(this.widgets, this.state, {
+        applyLayout: () => applyResponsiveLayout(this.widgets, this.state),
+        updateTopInfoBar: () => this.updateTopInfoBar(),
+        updateShortcutBar: () => this.updateShortcutBar(),
+        renderEventSelector: () => this.renderEventSelector(),
+        scheduleScorecardLoad: (index) => this.scheduleScorecardLoad(index)
+      });
     });
 
     if (!this.isNodeVersionSupported()) {
