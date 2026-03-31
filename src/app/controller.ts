@@ -8,21 +8,26 @@ import {
   playerJumpResetMillis
 } from '../config/constants';
 import {
-  fetchCompetitorSummary,
   fetchEventSelectorOptions,
   fetchLeaderboardData
 } from '../data/espn';
-import { buildVisiblePlayerRow, getEmptyPlayerViewMessage } from '../format/leaderboard';
+import { getEmptyPlayerViewMessage } from '../format/leaderboard';
 import { buildDetailHeader, formatCompactScorecard, formatFullScreenDetail } from '../format/scorecard';
 import {
   clearScorecardCache,
   createAppState,
-  findCompetitorForPlayerRow,
-  isFavoritePlayer,
-  playerMatchesCurrentView,
   toggleFavoritePlayer
 } from '../state/store';
 import { AppState, DetailContent, Widgets } from '../types';
+import {
+  applyTableColumnWidths,
+  buildTableData,
+  filterPlayers,
+  findPlayerIndexByName,
+  findPlayerIndexByPrefix,
+  getSelectedPlayerName
+} from './playerTable';
+import { getCachedPlayerSummary, getPlayerSummaryTarget, loadPlayerSummary } from './playerSummary';
 import { closeDetailOverlay, openDetailOverlay, showDetailContent as setDetailContent } from '../ui/detailView';
 import { updateShortcutBar as renderShortcutBar, updateTopInfoBar as renderTopInfoBar } from '../ui/bars';
 import {
@@ -356,33 +361,13 @@ class AppController {
   private refilter(filterText: string, options?: { preferredPlayerName?: string }): void {
     const preferredPlayerName = options?.preferredPlayerName || this.getSelectedPlayerName();
 
-    this.state.filteredPlayerList = _.filter(this.state.playerList, (player) => {
-      const nameMatches = !!(
-        player &&
-        player.PLAYER &&
-        player.PLAYER.toUpperCase().indexOf((filterText || '').toUpperCase()) !== -1
-      );
-      if (!nameMatches) {
-        return false;
-      }
-      return playerMatchesCurrentView(this.state, player);
-    });
+    this.state.filteredPlayerList = filterPlayers(this.state, filterText);
+    const table = buildTableData(this.state, this.state.filteredPlayerList);
 
-    const visibleRows = _.map(
-      this.state.filteredPlayerList,
-      (row) => buildVisiblePlayerRow(row, isFavoritePlayer(this.state, row))
-    );
-    const fallbackRow = this.state.playerList.length
-      ? [buildVisiblePlayerRow(this.state.playerList[0], isFavoritePlayer(this.state, this.state.playerList[0]))]
-      : [];
-    const rowSource = visibleRows.length ? visibleRows : fallbackRow;
-    const tableData = _.map(visibleRows, (row) => _.values(row));
-
-    const header = _.keys(rowSource[0] || {});
-    this.adjustTableColumnWidths(header);
+    applyTableColumnWidths(this.widgets.table, table.headers);
     this.state.suppressSelectionEvents = true;
-    this.widgets.table.setData({ data: tableData, headers: header });
-    const preferredIndex = this.findPlayerIndexByName(preferredPlayerName);
+    this.widgets.table.setData({ data: table.data, headers: table.headers });
+    const preferredIndex = findPlayerIndexByName(this.state.filteredPlayerList, preferredPlayerName);
     const selectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
     if (this.state.filteredPlayerList.length) {
       this.widgets.table.rows.select(selectedIndex);
@@ -398,21 +383,6 @@ class AppController {
     this.updateTopInfoBar();
     this.updateShortcutBar();
     this.widgets.screen.render();
-  }
-
-  private adjustTableColumnWidths(headers: string[]): void {
-    if (!Array.isArray(headers)) {
-      return;
-    }
-    this.widgets.table.options.columnWidth = headers.map(() => 8);
-    const favoriteColumnIndex = headers.indexOf('FAV');
-    if (favoriteColumnIndex >= 0) {
-      this.widgets.table.options.columnWidth[favoriteColumnIndex] = 3;
-    }
-    const playerColumnIndex = headers.indexOf('PLAYER');
-    if (playerColumnIndex >= 0) {
-      this.widgets.table.options.columnWidth[playerColumnIndex] = 24;
-    }
   }
 
   private scheduleScorecardLoad(index: number): void {
@@ -442,11 +412,8 @@ class AppController {
   }
 
   private getSelectedPlayerName(): string {
-    if (!this.state.filteredPlayerList.length) {
-      return '';
-    }
     const selectedIndex = this.widgets.table.rows.selected || 0;
-    return _.get(this.state.filteredPlayerList[selectedIndex], 'PLAYER', '');
+    return getSelectedPlayerName(this.state.filteredPlayerList, selectedIndex);
   }
 
   private handlePlayerJumpKeypress(ch: string, key: any): void {
@@ -488,9 +455,9 @@ class AppController {
     const normalizedPrefix = normalizeName(prefix);
     const currentIndex = this.widgets.table.rows.selected || 0;
 
-    let targetIndex = this.findPlayerIndexByPrefix(normalizedPrefix, currentIndex + 1, this.state.filteredPlayerList.length);
+    let targetIndex = findPlayerIndexByPrefix(this.state.filteredPlayerList, normalizedPrefix, currentIndex + 1, this.state.filteredPlayerList.length);
     if (targetIndex === -1) {
-      targetIndex = this.findPlayerIndexByPrefix(normalizedPrefix, 0, currentIndex + 1);
+      targetIndex = findPlayerIndexByPrefix(this.state.filteredPlayerList, normalizedPrefix, 0, currentIndex + 1);
     }
 
     if (targetIndex === -1) {
@@ -500,30 +467,6 @@ class AppController {
     this.widgets.table.rows.select(targetIndex);
     this.scheduleScorecardLoad(targetIndex);
     this.widgets.screen.render();
-  }
-
-  private findPlayerIndexByPrefix(normalizedPrefix: string, startIndex: number, endIndex: number): number {
-    for (let index = startIndex; index < endIndex; index += 1) {
-      const playerName = _.get(this.state.filteredPlayerList[index], 'PLAYER', '');
-      if (normalizeName(playerName).indexOf(normalizedPrefix) === 0) {
-        return index;
-      }
-    }
-    return -1;
-  }
-
-  private findPlayerIndexByName(playerName: string): number {
-    if (!playerName) {
-      return -1;
-    }
-    const normalizedName = normalizeName(playerName);
-    for (let index = 0; index < this.state.filteredPlayerList.length; index += 1) {
-      const listName = _.get(this.state.filteredPlayerList[index], 'PLAYER', '');
-      if (normalizeName(listName) === normalizedName) {
-        return index;
-      }
-    }
-    return -1;
   }
 
   private showScorecard(index: number): void {
@@ -536,16 +479,16 @@ class AppController {
       return;
     }
 
-    const competitor = findCompetitorForPlayerRow(this.state, selected);
-    if (!competitor?.id || !this.state.leaderboardMeta) {
+    const target = getPlayerSummaryTarget(this.state, selected);
+    if (!target) {
       this.widgets.scorecardBox.setContent(`No scorecard data found for ${selected.PLAYER}.`);
       this.widgets.screen.render();
       return;
     }
 
-    const cacheKey = `${this.state.leaderboardMeta.id}:${competitor.id}`;
-    if (this.state.scorecardCache[cacheKey]) {
-      this.widgets.scorecardBox.setContent(formatCompactScorecard(selected, this.state.scorecardCache[cacheKey]));
+    const cachedSummary = getCachedPlayerSummary(this.state, target);
+    if (cachedSummary) {
+      this.widgets.scorecardBox.setContent(formatCompactScorecard(selected, cachedSummary));
       this.widgets.screen.render();
       return;
     }
@@ -553,14 +496,8 @@ class AppController {
     this.widgets.scorecardBox.setContent(`Loading ${selected.PLAYER} scorecard...`);
     this.widgets.screen.render();
 
-    fetchCompetitorSummary(
-      this.state.leaderboardMeta.tour,
-      this.state.leaderboardMeta.id,
-      competitor.id,
-      this.state.selectedEvent?.tour
-    )
+    loadPlayerSummary(this.state, target)
       .then((summary) => {
-        this.state.scorecardCache[cacheKey] = summary;
         this.widgets.scorecardBox.setContent(formatCompactScorecard(selected, summary));
         this.widgets.screen.render();
       })
@@ -576,8 +513,8 @@ class AppController {
       return;
     }
 
-    const competitor = findCompetitorForPlayerRow(this.state, selected);
-    if (!competitor?.id || !this.state.leaderboardMeta) {
+    const target = getPlayerSummaryTarget(this.state, selected);
+    if (!target) {
       this.showDetail({
         header: buildDetailHeader(selected, this.getDetailRenderWidth()),
         body: `No detail data found for ${selected.PLAYER}.`
@@ -590,20 +527,14 @@ class AppController {
       body: `Loading full detail for ${selected.PLAYER}...`
     });
 
-    const cacheKey = `${this.state.leaderboardMeta.id}:${competitor.id}`;
-    if (this.state.scorecardCache[cacheKey]) {
-      this.showDetail(formatFullScreenDetail(selected, this.state.scorecardCache[cacheKey], this.getDetailRenderWidth()));
+    const cachedSummary = getCachedPlayerSummary(this.state, target);
+    if (cachedSummary) {
+      this.showDetail(formatFullScreenDetail(selected, cachedSummary, this.getDetailRenderWidth()));
       return;
     }
 
-    fetchCompetitorSummary(
-      this.state.leaderboardMeta.tour,
-      this.state.leaderboardMeta.id,
-      competitor.id,
-      this.state.selectedEvent?.tour
-    )
+    loadPlayerSummary(this.state, target)
       .then((summary) => {
-        this.state.scorecardCache[cacheKey] = summary;
         this.showDetail(formatFullScreenDetail(selected, summary, this.getDetailRenderWidth()));
       })
       .catch(() => {

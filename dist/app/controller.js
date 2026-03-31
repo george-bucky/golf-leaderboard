@@ -10,6 +10,8 @@ const espn_1 = require("../data/espn");
 const leaderboard_1 = require("../format/leaderboard");
 const scorecard_1 = require("../format/scorecard");
 const store_1 = require("../state/store");
+const playerTable_1 = require("./playerTable");
+const playerSummary_1 = require("./playerSummary");
 const detailView_1 = require("../ui/detailView");
 const bars_1 = require("../ui/bars");
 const eventSelector_1 = require("../ui/eventSelector");
@@ -298,26 +300,12 @@ class AppController {
     }
     refilter(filterText, options) {
         const preferredPlayerName = options?.preferredPlayerName || this.getSelectedPlayerName();
-        this.state.filteredPlayerList = lodash_1.default.filter(this.state.playerList, (player) => {
-            const nameMatches = !!(player &&
-                player.PLAYER &&
-                player.PLAYER.toUpperCase().indexOf((filterText || '').toUpperCase()) !== -1);
-            if (!nameMatches) {
-                return false;
-            }
-            return (0, store_1.playerMatchesCurrentView)(this.state, player);
-        });
-        const visibleRows = lodash_1.default.map(this.state.filteredPlayerList, (row) => (0, leaderboard_1.buildVisiblePlayerRow)(row, (0, store_1.isFavoritePlayer)(this.state, row)));
-        const fallbackRow = this.state.playerList.length
-            ? [(0, leaderboard_1.buildVisiblePlayerRow)(this.state.playerList[0], (0, store_1.isFavoritePlayer)(this.state, this.state.playerList[0]))]
-            : [];
-        const rowSource = visibleRows.length ? visibleRows : fallbackRow;
-        const tableData = lodash_1.default.map(visibleRows, (row) => lodash_1.default.values(row));
-        const header = lodash_1.default.keys(rowSource[0] || {});
-        this.adjustTableColumnWidths(header);
+        this.state.filteredPlayerList = (0, playerTable_1.filterPlayers)(this.state, filterText);
+        const table = (0, playerTable_1.buildTableData)(this.state, this.state.filteredPlayerList);
+        (0, playerTable_1.applyTableColumnWidths)(this.widgets.table, table.headers);
         this.state.suppressSelectionEvents = true;
-        this.widgets.table.setData({ data: tableData, headers: header });
-        const preferredIndex = this.findPlayerIndexByName(preferredPlayerName);
+        this.widgets.table.setData({ data: table.data, headers: table.headers });
+        const preferredIndex = (0, playerTable_1.findPlayerIndexByName)(this.state.filteredPlayerList, preferredPlayerName);
         const selectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
         if (this.state.filteredPlayerList.length) {
             this.widgets.table.rows.select(selectedIndex);
@@ -332,20 +320,6 @@ class AppController {
         this.updateTopInfoBar();
         this.updateShortcutBar();
         this.widgets.screen.render();
-    }
-    adjustTableColumnWidths(headers) {
-        if (!Array.isArray(headers)) {
-            return;
-        }
-        this.widgets.table.options.columnWidth = headers.map(() => 8);
-        const favoriteColumnIndex = headers.indexOf('FAV');
-        if (favoriteColumnIndex >= 0) {
-            this.widgets.table.options.columnWidth[favoriteColumnIndex] = 3;
-        }
-        const playerColumnIndex = headers.indexOf('PLAYER');
-        if (playerColumnIndex >= 0) {
-            this.widgets.table.options.columnWidth[playerColumnIndex] = 24;
-        }
     }
     scheduleScorecardLoad(index) {
         if (this.state.scorecardCollapsed) {
@@ -370,11 +344,8 @@ class AppController {
         this.widgets.screen.render();
     }
     getSelectedPlayerName() {
-        if (!this.state.filteredPlayerList.length) {
-            return '';
-        }
         const selectedIndex = this.widgets.table.rows.selected || 0;
-        return lodash_1.default.get(this.state.filteredPlayerList[selectedIndex], 'PLAYER', '');
+        return (0, playerTable_1.getSelectedPlayerName)(this.state.filteredPlayerList, selectedIndex);
     }
     handlePlayerJumpKeypress(ch, key) {
         if (!this.state.filteredPlayerList.length || this.widgets.screen.focused !== this.widgets.table.rows) {
@@ -408,9 +379,9 @@ class AppController {
         }
         const normalizedPrefix = (0, text_1.normalizeName)(prefix);
         const currentIndex = this.widgets.table.rows.selected || 0;
-        let targetIndex = this.findPlayerIndexByPrefix(normalizedPrefix, currentIndex + 1, this.state.filteredPlayerList.length);
+        let targetIndex = (0, playerTable_1.findPlayerIndexByPrefix)(this.state.filteredPlayerList, normalizedPrefix, currentIndex + 1, this.state.filteredPlayerList.length);
         if (targetIndex === -1) {
-            targetIndex = this.findPlayerIndexByPrefix(normalizedPrefix, 0, currentIndex + 1);
+            targetIndex = (0, playerTable_1.findPlayerIndexByPrefix)(this.state.filteredPlayerList, normalizedPrefix, 0, currentIndex + 1);
         }
         if (targetIndex === -1) {
             return;
@@ -418,28 +389,6 @@ class AppController {
         this.widgets.table.rows.select(targetIndex);
         this.scheduleScorecardLoad(targetIndex);
         this.widgets.screen.render();
-    }
-    findPlayerIndexByPrefix(normalizedPrefix, startIndex, endIndex) {
-        for (let index = startIndex; index < endIndex; index += 1) {
-            const playerName = lodash_1.default.get(this.state.filteredPlayerList[index], 'PLAYER', '');
-            if ((0, text_1.normalizeName)(playerName).indexOf(normalizedPrefix) === 0) {
-                return index;
-            }
-        }
-        return -1;
-    }
-    findPlayerIndexByName(playerName) {
-        if (!playerName) {
-            return -1;
-        }
-        const normalizedName = (0, text_1.normalizeName)(playerName);
-        for (let index = 0; index < this.state.filteredPlayerList.length; index += 1) {
-            const listName = lodash_1.default.get(this.state.filteredPlayerList[index], 'PLAYER', '');
-            if ((0, text_1.normalizeName)(listName) === normalizedName) {
-                return index;
-            }
-        }
-        return -1;
     }
     showScorecard(index) {
         if (this.state.scorecardCollapsed) {
@@ -449,23 +398,22 @@ class AppController {
         if (!selected?.PLAYER) {
             return;
         }
-        const competitor = (0, store_1.findCompetitorForPlayerRow)(this.state, selected);
-        if (!competitor?.id || !this.state.leaderboardMeta) {
+        const target = (0, playerSummary_1.getPlayerSummaryTarget)(this.state, selected);
+        if (!target) {
             this.widgets.scorecardBox.setContent(`No scorecard data found for ${selected.PLAYER}.`);
             this.widgets.screen.render();
             return;
         }
-        const cacheKey = `${this.state.leaderboardMeta.id}:${competitor.id}`;
-        if (this.state.scorecardCache[cacheKey]) {
-            this.widgets.scorecardBox.setContent((0, scorecard_1.formatCompactScorecard)(selected, this.state.scorecardCache[cacheKey]));
+        const cachedSummary = (0, playerSummary_1.getCachedPlayerSummary)(this.state, target);
+        if (cachedSummary) {
+            this.widgets.scorecardBox.setContent((0, scorecard_1.formatCompactScorecard)(selected, cachedSummary));
             this.widgets.screen.render();
             return;
         }
         this.widgets.scorecardBox.setContent(`Loading ${selected.PLAYER} scorecard...`);
         this.widgets.screen.render();
-        (0, espn_1.fetchCompetitorSummary)(this.state.leaderboardMeta.tour, this.state.leaderboardMeta.id, competitor.id, this.state.selectedEvent?.tour)
+        (0, playerSummary_1.loadPlayerSummary)(this.state, target)
             .then((summary) => {
-            this.state.scorecardCache[cacheKey] = summary;
             this.widgets.scorecardBox.setContent((0, scorecard_1.formatCompactScorecard)(selected, summary));
             this.widgets.screen.render();
         })
@@ -479,8 +427,8 @@ class AppController {
         if (!selected?.PLAYER) {
             return;
         }
-        const competitor = (0, store_1.findCompetitorForPlayerRow)(this.state, selected);
-        if (!competitor?.id || !this.state.leaderboardMeta) {
+        const target = (0, playerSummary_1.getPlayerSummaryTarget)(this.state, selected);
+        if (!target) {
             this.showDetail({
                 header: (0, scorecard_1.buildDetailHeader)(selected, this.getDetailRenderWidth()),
                 body: `No detail data found for ${selected.PLAYER}.`
@@ -491,14 +439,13 @@ class AppController {
             header: (0, scorecard_1.buildDetailHeader)(selected, this.getDetailRenderWidth()),
             body: `Loading full detail for ${selected.PLAYER}...`
         });
-        const cacheKey = `${this.state.leaderboardMeta.id}:${competitor.id}`;
-        if (this.state.scorecardCache[cacheKey]) {
-            this.showDetail((0, scorecard_1.formatFullScreenDetail)(selected, this.state.scorecardCache[cacheKey], this.getDetailRenderWidth()));
+        const cachedSummary = (0, playerSummary_1.getCachedPlayerSummary)(this.state, target);
+        if (cachedSummary) {
+            this.showDetail((0, scorecard_1.formatFullScreenDetail)(selected, cachedSummary, this.getDetailRenderWidth()));
             return;
         }
-        (0, espn_1.fetchCompetitorSummary)(this.state.leaderboardMeta.tour, this.state.leaderboardMeta.id, competitor.id, this.state.selectedEvent?.tour)
+        (0, playerSummary_1.loadPlayerSummary)(this.state, target)
             .then((summary) => {
-            this.state.scorecardCache[cacheKey] = summary;
             this.showDetail((0, scorecard_1.formatFullScreenDetail)(selected, summary, this.getDetailRenderWidth()));
         })
             .catch(() => {
