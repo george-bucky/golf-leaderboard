@@ -12,11 +12,13 @@
     "url": "https://github.com/george-bucky/golf-leaderboard.git"
   },
   "scripts": {
-    "start": "node index.js",
-    "test": "node --test"
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "start": "npm run build && node index.js",
+    "test": "npm run build && node --test"
   },
   "engines": {
-    "node": ">=18.0"
+    "node": ">=20.0"
   },
   "keywords": [
     "golf",
@@ -28,5 +30,11 @@
     "blessed": "^0.1.81",
     "blessed-contrib": "^2.5.3",
     "lodash": "^4.3.0"
+  },
+  "devDependencies": {
+    "@types/blessed": "^0.1.27",
+    "@types/lodash": "^4.17.24",
+    "@types/node": "^25.5.0",
+    "typescript": "^6.0.2"
   }
 }
