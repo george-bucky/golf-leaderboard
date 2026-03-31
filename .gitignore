@@ -23,5 +23,4 @@ pnpm-debug.log*
 
 # local build / pack artifacts
 coverage/
-dist/
 *.tgz

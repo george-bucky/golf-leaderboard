@@ -8,6 +8,12 @@ const path = require('node:path');
 const {
   loadPrimaryEventSelectorOptionsWithFallback
 } = require('../index');
+const {
+  buildPlayerViewText
+} = require('../dist/format/leaderboard.js');
+const {
+  formatCompactScorecard
+} = require('../dist/format/scorecard.js');
 
 test('falls back to the direct PGA fetch when the primary event request fails', async () => {
   const expectedOption = { id: '123', name: 'Players Championship' };
@@ -47,4 +53,29 @@ test('homebrew formula launches the installed package from node_modules', () => 
   assert.match(formula, /lib\/node_modules/);
   assert.match(formula, /leaderboard\.log/);
   assert.doesNotMatch(formula, /libexec\/index\.js/);
+});
+
+test('favorites view text shows the saved player count', () => {
+  assert.equal(buildPlayerViewText('favorites', 3), 'View: Favorites (3)');
+});
+
+test('compact scorecard handles players without round data', () => {
+  const text = formatCompactScorecard(
+    {
+      PLAYER: 'Scottie Scheffler',
+      POS: '1',
+      SCORE: '-12',
+      TODAY: '-3',
+      THRU: 'F',
+      R1: '68',
+      R2: '67',
+      R3: '69',
+      R4: '64',
+      TOT: '268',
+      COMP_ID: '123'
+    },
+    { rounds: [] }
+  );
+
+  assert.match(text, /No round-by-round scorecard available yet\./);
 });
