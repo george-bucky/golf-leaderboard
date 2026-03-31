@@ -14,6 +14,9 @@ const {
 const {
   formatCompactScorecard
 } = require('../dist/format/scorecard.js');
+const {
+  handleScreenResize
+} = require('../dist/app/resize.js');
 
 test('falls back to the direct PGA fetch when the primary event request fails', async () => {
   const expectedOption = { id: '123', name: 'Players Championship' };
@@ -55,6 +58,13 @@ test('homebrew formula launches the installed package from node_modules', () => 
   assert.doesNotMatch(formula, /libexec\/index\.js/);
 });
 
+test('package install does not require a dev-only prepare build', () => {
+  const packagePath = path.join(__dirname, '..', 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+
+  assert.equal(pkg.scripts.prepare, undefined);
+});
+
 test('favorites view text shows the saved player count', () => {
   assert.equal(buildPlayerViewText('favorites', 3), 'View: Favorites (3)');
 });
@@ -78,4 +88,29 @@ test('compact scorecard handles players without round data', () => {
   );
 
   assert.match(text, /No round-by-round scorecard available yet\./);
+});
+
+test('resize refreshes the shortcut footer before redrawing', () => {
+  const calls = [];
+  const widgets = {
+    table: { rows: { selected: 2 } },
+    screen: {
+      render: () => calls.push('render')
+    }
+  };
+  const state = {
+    eventSelectorOpen: false,
+    scorecardCollapsed: true,
+    filteredPlayerList: [{ PLAYER: 'A' }]
+  };
+
+  handleScreenResize(widgets, state, {
+    applyLayout: () => calls.push('layout'),
+    updateTopInfoBar: () => calls.push('top'),
+    updateShortcutBar: () => calls.push('shortcuts'),
+    renderEventSelector: () => calls.push('selector'),
+    scheduleScorecardLoad: () => calls.push('scorecard')
+  });
+
+  assert.deepEqual(calls, ['layout', 'top', 'shortcuts', 'render']);
 });
