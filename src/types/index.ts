@@ -78,6 +78,33 @@ export interface CompetitorSummary {
   [key: string]: any;
 }
 
+export interface PgaTourStroke {
+  strokeNumber: number;
+  playByPlay: string;
+  playByPlayLabel: string;
+  distance: string;
+  distanceRemaining: string;
+  fromLocation: string;
+  toLocation: string;
+}
+
+export interface PgaTourHoleShots {
+  holeNumber: number;
+  displayHoleNumber: string;
+  par: number | null;
+  yardage: number | null;
+  score: string;
+  status: string;
+  strokes: PgaTourStroke[];
+}
+
+export interface PgaTourShotSummary {
+  tournamentId: string;
+  playerId: string;
+  round: number;
+  holes: PgaTourHoleShots[];
+}
+
 export interface DetailContent {
   header: string;
   body: string;
@@ -111,6 +138,7 @@ export interface AppState {
   eventSelectorCardLayoutKey: string;
   favoritePlayersByEvent: Record<string, Record<string, boolean>>;
   scorecardCache: Record<string, CompetitorSummary>;
+  shotByShotCache: Record<string, PgaTourShotSummary | null>;
 }
 
 export interface Widgets {

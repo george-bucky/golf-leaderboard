@@ -61,7 +61,7 @@ export function buildEventSelectorOptionFromApiEvent(event: any, competition: an
     return Number.isNaN(order) ? Number.MAX_SAFE_INTEGER : order;
   });
   const leader = _.first(competitors) || {};
-  const leaderName = _.get(leader, 'athlete.displayName', '');
+  const leaderName = getCompetitorDisplayName(leader);
   const leaderScore = formatLeaderboardScore(leader);
 
   return {
@@ -200,15 +200,18 @@ export function buildLeaderboardMeta(event: any, competition: any): LeaderboardM
   const competitorMap = _.reduce(
     competitors,
     (memo: Record<string, { id: string; status: string; name: string }>, competitor) => {
-      const playerName = _.get(competitor, 'athlete.displayName', '');
+      const playerName = getCompetitorDisplayName(competitor);
       if (!playerName) {
         return memo;
       }
-      memo[normalizeName(playerName)] = {
+      const competitorIdentity = {
         id: `${competitor.id || ''}`,
         status: _.get(competitor, 'status.type.state', ''),
         name: playerName
       };
+      _.forEach(getCompetitorNameVariants(competitor), (name) => {
+        memo[normalizeName(name)] = competitorIdentity;
+      });
       return memo;
     },
     {}
@@ -224,7 +227,7 @@ export function buildLeaderboardMeta(event: any, competition: any): LeaderboardM
       memo[competitorId] = {
         id: competitorId,
         status: _.get(competitor, 'status.type.state', ''),
-        name: _.get(competitor, 'athlete.displayName', '')
+        name: getCompetitorDisplayName(competitor)
       };
       return memo;
     },
@@ -260,7 +263,7 @@ export function buildLeaderboardRows(competitors: any[], competitionStatus: any)
     return {
       COMP_ID: `${competitor.id || ''}`,
       POS: formatLeaderboardPos(_.get(competitor, 'status.position')),
-      PLAYER: _.get(competitor, 'athlete.displayName', '--'),
+      PLAYER: getCompetitorDisplayName(competitor) || '--',
       SCORE: formatLeaderboardScore(competitor),
       TODAY: formatLeaderboardToday(competitor, currentRound),
       THRU: formatLeaderboardThru(competitor),
@@ -269,9 +272,56 @@ export function buildLeaderboardRows(competitors: any[], competitionStatus: any)
       R3: formatLeaderboardRoundScore(roundThree, competitor, 3, currentRound),
       R4: formatLeaderboardRoundScore(roundFour, competitor, 4, currentRound),
       TOT: formatLeaderboardTotal(competitor),
-      CTRY: _.get(competitor, 'athlete.flag.alt', '')
+      CTRY: getCompetitorCountry(competitor)
     };
   });
+}
+
+function getCompetitorDisplayName(competitor: any): string {
+  return (
+    _.get(competitor, 'athlete.displayName', '')
+    || joinRosterNames(competitor, 'displayName')
+    || _.get(competitor, 'team.displayName', '')
+    || joinRosterNames(competitor, 'shortName')
+    || _.get(competitor, 'team.shortDisplayName', '')
+    || ''
+  ).trim();
+}
+
+function getCompetitorNameVariants(competitor: any): string[] {
+  return _.uniq(
+    _.compact([
+      _.get(competitor, 'athlete.displayName', ''),
+      joinRosterNames(competitor, 'displayName'),
+      _.get(competitor, 'team.displayName', ''),
+      joinRosterNames(competitor, 'shortName'),
+      _.get(competitor, 'team.shortDisplayName', ''),
+      ..._.map(competitor?.roster || [], (entry) => _.get(entry, 'athlete.displayName', '')),
+      ..._.map(competitor?.roster || [], (entry) => _.get(entry, 'athlete.shortName', ''))
+    ])
+  );
+}
+
+function joinRosterNames(competitor: any, fieldName: 'displayName' | 'shortName'): string {
+  return _.chain(competitor?.roster || [])
+    .map((entry) => _.get(entry, `athlete.${fieldName}`, ''))
+    .compact()
+    .join(' / ')
+    .value();
+}
+
+function getCompetitorCountry(competitor: any): string {
+  const athleteCountry = _.get(competitor, 'athlete.flag.alt', '');
+  if (athleteCountry) {
+    return athleteCountry;
+  }
+
+  return _.chain(competitor?.roster || [])
+    .map((entry) => _.get(entry, 'athlete.flag.alt', ''))
+    .compact()
+    .uniq()
+    .join('/')
+    .value();
 }
 
 function findRoundScoreByPeriod(linescores: any[], period: number): any {

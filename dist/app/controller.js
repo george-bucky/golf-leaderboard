@@ -7,6 +7,7 @@ exports.main = main;
 const lodash_1 = __importDefault(require("lodash"));
 const constants_1 = require("../config/constants");
 const espn_1 = require("../data/espn");
+const pgatour_1 = require("../data/pgatour");
 const leaderboard_1 = require("../format/leaderboard");
 const scorecard_1 = require("../format/scorecard");
 const store_1 = require("../state/store");
@@ -312,11 +313,12 @@ class AppController {
             ? [(0, leaderboard_1.buildVisiblePlayerRow)(this.state.playerList[0], (0, store_1.isFavoritePlayer)(this.state, this.state.playerList[0]))]
             : [];
         const rowSource = visibleRows.length ? visibleRows : fallbackRow;
-        const tableData = lodash_1.default.map(visibleRows, (row) => lodash_1.default.values(row));
         const header = lodash_1.default.keys(rowSource[0] || {});
-        this.adjustTableColumnWidths(header);
+        const columnWidths = this.getTableColumnWidths(header);
+        const tableData = (0, leaderboard_1.buildTableData)(visibleRows, { headers: header, columnWidths });
         this.state.suppressSelectionEvents = true;
-        this.widgets.table.setData({ data: tableData, headers: header });
+        this.widgets.table.options.columnWidth = columnWidths;
+        this.widgets.table.setData(tableData);
         const preferredIndex = this.findPlayerIndexByName(preferredPlayerName);
         const selectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
         if (this.state.filteredPlayerList.length) {
@@ -333,19 +335,20 @@ class AppController {
         this.updateShortcutBar();
         this.widgets.screen.render();
     }
-    adjustTableColumnWidths(headers) {
+    getTableColumnWidths(headers) {
         if (!Array.isArray(headers)) {
-            return;
+            return [];
         }
-        this.widgets.table.options.columnWidth = headers.map(() => 8);
+        const widths = headers.map(() => 8);
         const favoriteColumnIndex = headers.indexOf('FAV');
         if (favoriteColumnIndex >= 0) {
-            this.widgets.table.options.columnWidth[favoriteColumnIndex] = 3;
+            widths[favoriteColumnIndex] = 3;
         }
         const playerColumnIndex = headers.indexOf('PLAYER');
         if (playerColumnIndex >= 0) {
-            this.widgets.table.options.columnWidth[playerColumnIndex] = 24;
+            widths[playerColumnIndex] = 24;
         }
+        return widths;
     }
     scheduleScorecardLoad(index) {
         if (this.state.scorecardCollapsed) {
@@ -457,8 +460,7 @@ class AppController {
         }
         const cacheKey = `${this.state.leaderboardMeta.id}:${competitor.id}`;
         if (this.state.scorecardCache[cacheKey]) {
-            this.widgets.scorecardBox.setContent((0, scorecard_1.formatCompactScorecard)(selected, this.state.scorecardCache[cacheKey]));
-            this.widgets.screen.render();
+            this.renderScorecardWithShots(selected, this.state.scorecardCache[cacheKey], cacheKey);
             return;
         }
         this.widgets.scorecardBox.setContent(`Loading ${selected.PLAYER} scorecard...`);
@@ -466,13 +468,70 @@ class AppController {
         (0, espn_1.fetchCompetitorSummary)(this.state.leaderboardMeta.tour, this.state.leaderboardMeta.id, competitor.id, this.state.selectedEvent?.tour)
             .then((summary) => {
             this.state.scorecardCache[cacheKey] = summary;
-            this.widgets.scorecardBox.setContent((0, scorecard_1.formatCompactScorecard)(selected, summary));
-            this.widgets.screen.render();
+            this.renderScorecardWithShots(selected, summary, cacheKey);
         })
             .catch(() => {
+            if (!this.isCurrentScorecardSelection(selected, cacheKey)) {
+                return;
+            }
             this.widgets.scorecardBox.setContent(`Unable to load scorecard for ${selected.PLAYER}.`);
             this.widgets.screen.render();
         });
+    }
+    renderScorecardWithShots(selected, summary, scorecardCacheKey) {
+        if (!this.isCurrentScorecardSelection(selected, scorecardCacheKey)) {
+            return;
+        }
+        const round = this.state.leaderboardMeta?.currentRound || null;
+        const shotCacheKey = `${scorecardCacheKey}:${round || 'current'}:shots`;
+        if (Object.prototype.hasOwnProperty.call(this.state.shotByShotCache, shotCacheKey)) {
+            this.widgets.scorecardBox.setContent((0, scorecard_1.formatCompactScorecard)(selected, summary, this.state.shotByShotCache[shotCacheKey]));
+            this.widgets.screen.render();
+            return;
+        }
+        this.widgets.scorecardBox.setContent((0, scorecard_1.formatCompactScorecard)(selected, summary));
+        this.widgets.screen.render();
+        (0, pgatour_1.fetchPgaTourShotSummary)({
+            tour: this.state.leaderboardMeta?.tour,
+            eventName: this.state.leaderboardMeta?.name || '',
+            playerName: selected.PLAYER,
+            round
+        }).then((shotSummary) => {
+            this.state.shotByShotCache[shotCacheKey] = shotSummary;
+            if (!shotSummary || !this.isCurrentScorecardSelection(selected, scorecardCacheKey)) {
+                return;
+            }
+            this.widgets.scorecardBox.setContent((0, scorecard_1.formatCompactScorecard)(selected, summary, shotSummary));
+            this.widgets.screen.render();
+        });
+    }
+    isCurrentScorecardSelection(selected, expectedScorecardCacheKey) {
+        if (this.state.scorecardCollapsed || this.state.eventSelectorOpen || this.state.detailViewOpen) {
+            return false;
+        }
+        return this.isCurrentPlayerSelection(selected, expectedScorecardCacheKey);
+    }
+    isCurrentDetailSelection(selected, expectedScorecardCacheKey) {
+        if (!this.state.detailViewOpen || this.state.eventSelectorOpen) {
+            return false;
+        }
+        return this.isCurrentPlayerSelection(selected, expectedScorecardCacheKey);
+    }
+    isCurrentPlayerSelection(selected, expectedScorecardCacheKey) {
+        if (!selected || !this.state.leaderboardMeta) {
+            return false;
+        }
+        const currentIndex = this.widgets.table.rows.selected || 0;
+        const current = this.state.filteredPlayerList[currentIndex];
+        if (current?.COMP_ID !== selected.COMP_ID || current?.PLAYER !== selected.PLAYER) {
+            return false;
+        }
+        if (!expectedScorecardCacheKey) {
+            return true;
+        }
+        const currentCompetitor = (0, store_1.findCompetitorForPlayerRow)(this.state, current);
+        const currentCacheKey = `${this.state.leaderboardMeta.id}:${currentCompetitor?.id || ''}`;
+        return currentCacheKey === expectedScorecardCacheKey;
     }
     openDetailView(index) {
         const selected = this.state.filteredPlayerList[index];
@@ -499,9 +558,15 @@ class AppController {
         (0, espn_1.fetchCompetitorSummary)(this.state.leaderboardMeta.tour, this.state.leaderboardMeta.id, competitor.id, this.state.selectedEvent?.tour)
             .then((summary) => {
             this.state.scorecardCache[cacheKey] = summary;
+            if (!this.isCurrentDetailSelection(selected, cacheKey)) {
+                return;
+            }
             this.showDetail((0, scorecard_1.formatFullScreenDetail)(selected, summary, this.getDetailRenderWidth()));
         })
             .catch(() => {
+            if (!this.isCurrentDetailSelection(selected, cacheKey)) {
+                return;
+            }
             this.showDetail({
                 header: (0, scorecard_1.buildDetailHeader)(selected, this.getDetailRenderWidth()),
                 body: `Unable to load full detail for ${selected.PLAYER}.`

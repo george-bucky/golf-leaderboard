@@ -11,7 +11,7 @@ const lodash_1 = __importDefault(require("lodash"));
 const constants_1 = require("../config/constants");
 const text_1 = require("../utils/text");
 const time_1 = require("../utils/time");
-function formatCompactScorecard(player, summary) {
+function formatCompactScorecard(player, summary, shotSummary) {
     const rounds = lodash_1.default.sortBy(summary.rounds || [], (round) => round.period);
     const lines = [];
     lines.push(`${player.PLAYER}`);
@@ -22,6 +22,11 @@ function formatCompactScorecard(player, summary) {
         return lines.join('\n');
     }
     const currentRound = getCurrentRound(rounds);
+    const shotLines = buildShotByShotLines(shotSummary);
+    if (shotLines.length) {
+        lines.push(...shotLines);
+        lines.push('');
+    }
     lines.push('{bold}Current Round{/bold}');
     lines.push(formatRoundHeader(currentRound));
     lines.push(...buildRoundRows(currentRound, { singleRow: false }));
@@ -78,6 +83,45 @@ function formatDetailedScorecard(summary, layout) {
 function getCurrentRound(rounds) {
     const withScores = lodash_1.default.filter(rounds, (round) => (round.linescores || []).length > 0);
     return withScores.length ? lodash_1.default.last(withScores) : (lodash_1.default.last(rounds) || {});
+}
+function buildShotByShotLines(summary) {
+    const hole = getLatestShotHole(summary);
+    if (!hole) {
+        return [];
+    }
+    const lines = ['{bold}Shot-by-shot{/bold}', formatShotHoleHeader(hole)];
+    lodash_1.default.forEach(hole.strokes, (stroke) => {
+        const label = stroke.playByPlayLabel || `Shot ${stroke.strokeNumber}`;
+        const shotText = `${stroke.playByPlay || formatShotFallback(stroke)}`.trim();
+        if (!shotText)
+            return;
+        lines.push(`${label}: ${(0, text_1.truncateText)(shotText, 58)}`);
+    });
+    return lines.length > 2 ? lines : [];
+}
+function getLatestShotHole(summary) {
+    const holes = lodash_1.default.filter(summary?.holes || [], (hole) => (hole.strokes || []).length > 0);
+    return (holes.length ? lodash_1.default.last(holes) : null);
+}
+function formatShotHoleHeader(hole) {
+    const parts = [`Hole ${hole.displayHoleNumber || hole.holeNumber}`];
+    if (hole.par != null)
+        parts.push(`Par ${hole.par}`);
+    if (hole.yardage != null)
+        parts.push(`${hole.yardage} yds`);
+    if (hole.score)
+        parts.push(`Score ${hole.score}`);
+    return parts.join('  ');
+}
+function formatShotFallback(stroke) {
+    const distance = normalizeShotText(stroke.distance);
+    const toLocation = normalizeShotText(stroke.toLocation);
+    const distanceRemaining = normalizeShotText(stroke.distanceRemaining);
+    const parts = lodash_1.default.compact([distance, toLocation, distanceRemaining ? `${distanceRemaining} to hole` : '']);
+    return parts.join(' ');
+}
+function normalizeShotText(value) {
+    return value == null ? '' : `${value}`.trim();
 }
 function formatRoundHeader(round) {
     const parts = [`{bold}Round ${round.period}{/bold}`, `Score: ${round.displayValue || '--'}`];

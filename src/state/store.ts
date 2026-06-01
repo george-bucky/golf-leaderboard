@@ -31,13 +31,17 @@ export function createAppState(): AppState {
     eventSelectorLoadPromise: null,
     eventSelectorCardLayoutKey: '',
     favoritePlayersByEvent: {},
-    scorecardCache: {}
+    scorecardCache: {},
+    shotByShotCache: {}
   };
 }
 
 export function clearScorecardCache(state: AppState): void {
   Object.keys(state.scorecardCache).forEach((key) => {
     delete state.scorecardCache[key];
+  });
+  Object.keys(state.shotByShotCache).forEach((key) => {
+    delete state.shotByShotCache[key];
   });
 }
 

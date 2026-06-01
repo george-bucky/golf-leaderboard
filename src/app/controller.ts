@@ -12,7 +12,8 @@ import {
   fetchEventSelectorOptions,
   fetchLeaderboardData
 } from '../data/espn';
-import { buildVisiblePlayerRow, getEmptyPlayerViewMessage } from '../format/leaderboard';
+import { fetchPgaTourShotSummary } from '../data/pgatour';
+import { buildTableData, buildVisiblePlayerRow, getEmptyPlayerViewMessage } from '../format/leaderboard';
 import { buildDetailHeader, formatCompactScorecard, formatFullScreenDetail } from '../format/scorecard';
 import {
   clearScorecardCache,
@@ -376,12 +377,12 @@ class AppController {
       ? [buildVisiblePlayerRow(this.state.playerList[0], isFavoritePlayer(this.state, this.state.playerList[0]))]
       : [];
     const rowSource = visibleRows.length ? visibleRows : fallbackRow;
-    const tableData = _.map(visibleRows, (row) => _.values(row));
-
     const header = _.keys(rowSource[0] || {});
-    this.adjustTableColumnWidths(header);
+    const columnWidths = this.getTableColumnWidths(header);
+    const tableData = buildTableData(visibleRows, { headers: header, columnWidths });
     this.state.suppressSelectionEvents = true;
-    this.widgets.table.setData({ data: tableData, headers: header });
+    this.widgets.table.options.columnWidth = columnWidths;
+    this.widgets.table.setData(tableData);
     const preferredIndex = this.findPlayerIndexByName(preferredPlayerName);
     const selectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
     if (this.state.filteredPlayerList.length) {
@@ -400,19 +401,20 @@ class AppController {
     this.widgets.screen.render();
   }
 
-  private adjustTableColumnWidths(headers: string[]): void {
+  private getTableColumnWidths(headers: string[]): number[] {
     if (!Array.isArray(headers)) {
-      return;
+      return [];
     }
-    this.widgets.table.options.columnWidth = headers.map(() => 8);
+    const widths = headers.map(() => 8);
     const favoriteColumnIndex = headers.indexOf('FAV');
     if (favoriteColumnIndex >= 0) {
-      this.widgets.table.options.columnWidth[favoriteColumnIndex] = 3;
+      widths[favoriteColumnIndex] = 3;
     }
     const playerColumnIndex = headers.indexOf('PLAYER');
     if (playerColumnIndex >= 0) {
-      this.widgets.table.options.columnWidth[playerColumnIndex] = 24;
+      widths[playerColumnIndex] = 24;
     }
+    return widths;
   }
 
   private scheduleScorecardLoad(index: number): void {
@@ -545,8 +547,7 @@ class AppController {
 
     const cacheKey = `${this.state.leaderboardMeta.id}:${competitor.id}`;
     if (this.state.scorecardCache[cacheKey]) {
-      this.widgets.scorecardBox.setContent(formatCompactScorecard(selected, this.state.scorecardCache[cacheKey]));
-      this.widgets.screen.render();
+      this.renderScorecardWithShots(selected, this.state.scorecardCache[cacheKey], cacheKey);
       return;
     }
 
@@ -561,13 +562,81 @@ class AppController {
     )
       .then((summary) => {
         this.state.scorecardCache[cacheKey] = summary;
-        this.widgets.scorecardBox.setContent(formatCompactScorecard(selected, summary));
-        this.widgets.screen.render();
+        this.renderScorecardWithShots(selected, summary, cacheKey);
       })
       .catch(() => {
+        if (!this.isCurrentScorecardSelection(selected, cacheKey)) {
+          return;
+        }
         this.widgets.scorecardBox.setContent(`Unable to load scorecard for ${selected.PLAYER}.`);
         this.widgets.screen.render();
       });
+  }
+
+  private renderScorecardWithShots(selected: any, summary: any, scorecardCacheKey: string): void {
+    if (!this.isCurrentScorecardSelection(selected, scorecardCacheKey)) {
+      return;
+    }
+
+    const round = this.state.leaderboardMeta?.currentRound || null;
+    const shotCacheKey = `${scorecardCacheKey}:${round || 'current'}:shots`;
+
+    if (Object.prototype.hasOwnProperty.call(this.state.shotByShotCache, shotCacheKey)) {
+      this.widgets.scorecardBox.setContent(formatCompactScorecard(selected, summary, this.state.shotByShotCache[shotCacheKey]));
+      this.widgets.screen.render();
+      return;
+    }
+
+    this.widgets.scorecardBox.setContent(formatCompactScorecard(selected, summary));
+    this.widgets.screen.render();
+
+    fetchPgaTourShotSummary({
+      tour: this.state.leaderboardMeta?.tour,
+      eventName: this.state.leaderboardMeta?.name || '',
+      playerName: selected.PLAYER,
+      round
+    }).then((shotSummary) => {
+      this.state.shotByShotCache[shotCacheKey] = shotSummary;
+      if (!shotSummary || !this.isCurrentScorecardSelection(selected, scorecardCacheKey)) {
+        return;
+      }
+      this.widgets.scorecardBox.setContent(formatCompactScorecard(selected, summary, shotSummary));
+      this.widgets.screen.render();
+    });
+  }
+
+  private isCurrentScorecardSelection(selected: any, expectedScorecardCacheKey?: string): boolean {
+    if (this.state.scorecardCollapsed || this.state.eventSelectorOpen || this.state.detailViewOpen) {
+      return false;
+    }
+    return this.isCurrentPlayerSelection(selected, expectedScorecardCacheKey);
+  }
+
+  private isCurrentDetailSelection(selected: any, expectedScorecardCacheKey?: string): boolean {
+    if (!this.state.detailViewOpen || this.state.eventSelectorOpen) {
+      return false;
+    }
+    return this.isCurrentPlayerSelection(selected, expectedScorecardCacheKey);
+  }
+
+  private isCurrentPlayerSelection(selected: any, expectedScorecardCacheKey?: string): boolean {
+    if (!selected || !this.state.leaderboardMeta) {
+      return false;
+    }
+
+    const currentIndex = this.widgets.table.rows.selected || 0;
+    const current = this.state.filteredPlayerList[currentIndex];
+    if (current?.COMP_ID !== selected.COMP_ID || current?.PLAYER !== selected.PLAYER) {
+      return false;
+    }
+
+    if (!expectedScorecardCacheKey) {
+      return true;
+    }
+
+    const currentCompetitor = findCompetitorForPlayerRow(this.state, current);
+    const currentCacheKey = `${this.state.leaderboardMeta.id}:${currentCompetitor?.id || ''}`;
+    return currentCacheKey === expectedScorecardCacheKey;
   }
 
   private openDetailView(index: number): void {
@@ -604,9 +673,15 @@ class AppController {
     )
       .then((summary) => {
         this.state.scorecardCache[cacheKey] = summary;
+        if (!this.isCurrentDetailSelection(selected, cacheKey)) {
+          return;
+        }
         this.showDetail(formatFullScreenDetail(selected, summary, this.getDetailRenderWidth()));
       })
       .catch(() => {
+        if (!this.isCurrentDetailSelection(selected, cacheKey)) {
+          return;
+        }
         this.showDetail({
           header: buildDetailHeader(selected, this.getDetailRenderWidth()),
           body: `Unable to load full detail for ${selected.PLAYER}.`

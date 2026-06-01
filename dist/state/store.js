@@ -48,12 +48,16 @@ function createAppState() {
         eventSelectorLoadPromise: null,
         eventSelectorCardLayoutKey: '',
         favoritePlayersByEvent: {},
-        scorecardCache: {}
+        scorecardCache: {},
+        shotByShotCache: {}
     };
 }
 function clearScorecardCache(state) {
     Object.keys(state.scorecardCache).forEach((key) => {
         delete state.scorecardCache[key];
+    });
+    Object.keys(state.shotByShotCache).forEach((key) => {
+        delete state.shotByShotCache[key];
     });
 }
 function resetPlayerViewMode(state) {
