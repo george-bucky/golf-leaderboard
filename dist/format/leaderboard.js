@@ -100,10 +100,18 @@ function buildPlayerViewText(viewMode, favoriteCount) {
     }
     return `View: ${getPlayerViewModeLabel(viewMode)}`;
 }
-function buildTableData(rows) {
-    const headers = Object.keys(rows[0] || {});
+function buildTableData(rows, options) {
+    const headers = options?.headers || Object.keys(rows[0] || {});
+    const columnWidths = options?.columnWidths || [];
     return {
-        headers,
-        data: rows.map((row) => lodash_1.default.values(row))
+        headers: headers.map((header, index) => fitTableCell(header, columnWidths[index])),
+        data: rows.map((row) => headers.map((header, index) => fitTableCell(lodash_1.default.get(row, header, ''), columnWidths[index])))
     };
+}
+function fitTableCell(value, columnWidth) {
+    const text = `${value || ''}`;
+    if (!Number.isInteger(columnWidth) || columnWidth <= 0) {
+        return text;
+    }
+    return (0, text_1.truncateText)(text, columnWidth);
 }

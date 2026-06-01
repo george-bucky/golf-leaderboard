@@ -8,11 +8,11 @@ import {
   STATS_LABEL_WIDTH,
   STATS_VALUE_WIDTH
 } from '../config/constants';
-import { CompetitorSummary, DetailContent, PlayerRow, RoundSummary, StatSource } from '../types';
-import { padCell, padEndText, padStartText } from '../utils/text';
+import { CompetitorSummary, DetailContent, PgaTourHoleShots, PgaTourShotSummary, PlayerRow, RoundSummary, StatSource } from '../types';
+import { padCell, padEndText, padStartText, truncateText } from '../utils/text';
 import { parseTeeTime } from '../utils/time';
 
-export function formatCompactScorecard(player: PlayerRow, summary: CompetitorSummary): string {
+export function formatCompactScorecard(player: PlayerRow, summary: CompetitorSummary, shotSummary?: PgaTourShotSummary | null): string {
   const rounds = _.sortBy(summary.rounds || [], (round) => round.period);
   const lines = [];
   lines.push(`${player.PLAYER}`);
@@ -25,6 +25,11 @@ export function formatCompactScorecard(player: PlayerRow, summary: CompetitorSum
   }
 
   const currentRound = getCurrentRound(rounds);
+  const shotLines = buildShotByShotLines(shotSummary);
+  if (shotLines.length) {
+    lines.push(...shotLines);
+    lines.push('');
+  }
   lines.push('{bold}Current Round{/bold}');
   lines.push(formatRoundHeader(currentRound));
   lines.push(...buildRoundRows(currentRound, { singleRow: false }));
@@ -87,6 +92,47 @@ function formatDetailedScorecard(summary: CompetitorSummary, layout: any): strin
 function getCurrentRound(rounds: RoundSummary[]): RoundSummary {
   const withScores = _.filter(rounds, (round) => (round.linescores || []).length > 0);
   return withScores.length ? (_.last(withScores) as RoundSummary) : ((_.last(rounds) || {}) as RoundSummary);
+}
+
+function buildShotByShotLines(summary?: PgaTourShotSummary | null): string[] {
+  const hole = getLatestShotHole(summary);
+  if (!hole) {
+    return [];
+  }
+
+  const lines = ['{bold}Shot-by-shot{/bold}', formatShotHoleHeader(hole)];
+  _.forEach(hole.strokes, (stroke) => {
+    const label = stroke.playByPlayLabel || `Shot ${stroke.strokeNumber}`;
+    const shotText = `${stroke.playByPlay || formatShotFallback(stroke)}`.trim();
+    if (!shotText) return;
+    lines.push(`${label}: ${truncateText(shotText, 58)}`);
+  });
+  return lines.length > 2 ? lines : [];
+}
+
+function getLatestShotHole(summary?: PgaTourShotSummary | null): PgaTourHoleShots | null {
+  const holes = _.filter(summary?.holes || [], (hole) => (hole.strokes || []).length > 0);
+  return (holes.length ? (_.last(holes) as PgaTourHoleShots) : null);
+}
+
+function formatShotHoleHeader(hole: PgaTourHoleShots): string {
+  const parts = [`Hole ${hole.displayHoleNumber || hole.holeNumber}`];
+  if (hole.par != null) parts.push(`Par ${hole.par}`);
+  if (hole.yardage != null) parts.push(`${hole.yardage} yds`);
+  if (hole.score) parts.push(`Score ${hole.score}`);
+  return parts.join('  ');
+}
+
+function formatShotFallback(stroke: any): string {
+  const distance = normalizeShotText(stroke.distance);
+  const toLocation = normalizeShotText(stroke.toLocation);
+  const distanceRemaining = normalizeShotText(stroke.distanceRemaining);
+  const parts = _.compact([distance, toLocation, distanceRemaining ? `${distanceRemaining} to hole` : '']);
+  return parts.join(' ');
+}
+
+function normalizeShotText(value: any): string {
+  return value == null ? '' : `${value}`.trim();
 }
 
 function formatRoundHeader(round: RoundSummary): string {

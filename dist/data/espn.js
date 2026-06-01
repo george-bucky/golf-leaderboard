@@ -65,7 +65,7 @@ function buildEventSelectorOptionFromApiEvent(event, competition) {
         return Number.isNaN(order) ? Number.MAX_SAFE_INTEGER : order;
     });
     const leader = lodash_1.default.first(competitors) || {};
-    const leaderName = lodash_1.default.get(leader, 'athlete.displayName', '');
+    const leaderName = getCompetitorDisplayName(leader);
     const leaderScore = formatLeaderboardScore(leader);
     return {
         id: `${event.id || ''}`,
@@ -185,15 +185,18 @@ function buildLeaderboardMeta(event, competition) {
     const purse = lodash_1.default.get(event, 'displayPurse') || lodash_1.default.get(event, 'purse') || '';
     const competitors = competition.competitors || [];
     const competitorMap = lodash_1.default.reduce(competitors, (memo, competitor) => {
-        const playerName = lodash_1.default.get(competitor, 'athlete.displayName', '');
+        const playerName = getCompetitorDisplayName(competitor);
         if (!playerName) {
             return memo;
         }
-        memo[(0, text_1.normalizeName)(playerName)] = {
+        const competitorIdentity = {
             id: `${competitor.id || ''}`,
             status: lodash_1.default.get(competitor, 'status.type.state', ''),
             name: playerName
         };
+        lodash_1.default.forEach(getCompetitorNameVariants(competitor), (name) => {
+            memo[(0, text_1.normalizeName)(name)] = competitorIdentity;
+        });
         return memo;
     }, {});
     const competitorMapById = lodash_1.default.reduce(competitors, (memo, competitor) => {
@@ -204,7 +207,7 @@ function buildLeaderboardMeta(event, competition) {
         memo[competitorId] = {
             id: competitorId,
             status: lodash_1.default.get(competitor, 'status.type.state', ''),
-            name: lodash_1.default.get(competitor, 'athlete.displayName', '')
+            name: getCompetitorDisplayName(competitor)
         };
         return memo;
     }, {});
@@ -235,7 +238,7 @@ function buildLeaderboardRows(competitors, competitionStatus) {
         return {
             COMP_ID: `${competitor.id || ''}`,
             POS: formatLeaderboardPos(lodash_1.default.get(competitor, 'status.position')),
-            PLAYER: lodash_1.default.get(competitor, 'athlete.displayName', '--'),
+            PLAYER: getCompetitorDisplayName(competitor) || '--',
             SCORE: formatLeaderboardScore(competitor),
             TODAY: formatLeaderboardToday(competitor, currentRound),
             THRU: formatLeaderboardThru(competitor),
@@ -244,9 +247,47 @@ function buildLeaderboardRows(competitors, competitionStatus) {
             R3: formatLeaderboardRoundScore(roundThree, competitor, 3, currentRound),
             R4: formatLeaderboardRoundScore(roundFour, competitor, 4, currentRound),
             TOT: formatLeaderboardTotal(competitor),
-            CTRY: lodash_1.default.get(competitor, 'athlete.flag.alt', '')
+            CTRY: getCompetitorCountry(competitor)
         };
     });
+}
+function getCompetitorDisplayName(competitor) {
+    return (lodash_1.default.get(competitor, 'athlete.displayName', '')
+        || joinRosterNames(competitor, 'displayName')
+        || lodash_1.default.get(competitor, 'team.displayName', '')
+        || joinRosterNames(competitor, 'shortName')
+        || lodash_1.default.get(competitor, 'team.shortDisplayName', '')
+        || '').trim();
+}
+function getCompetitorNameVariants(competitor) {
+    return lodash_1.default.uniq(lodash_1.default.compact([
+        lodash_1.default.get(competitor, 'athlete.displayName', ''),
+        joinRosterNames(competitor, 'displayName'),
+        lodash_1.default.get(competitor, 'team.displayName', ''),
+        joinRosterNames(competitor, 'shortName'),
+        lodash_1.default.get(competitor, 'team.shortDisplayName', ''),
+        ...lodash_1.default.map(competitor?.roster || [], (entry) => lodash_1.default.get(entry, 'athlete.displayName', '')),
+        ...lodash_1.default.map(competitor?.roster || [], (entry) => lodash_1.default.get(entry, 'athlete.shortName', ''))
+    ]));
+}
+function joinRosterNames(competitor, fieldName) {
+    return lodash_1.default.chain(competitor?.roster || [])
+        .map((entry) => lodash_1.default.get(entry, `athlete.${fieldName}`, ''))
+        .compact()
+        .join(' / ')
+        .value();
+}
+function getCompetitorCountry(competitor) {
+    const athleteCountry = lodash_1.default.get(competitor, 'athlete.flag.alt', '');
+    if (athleteCountry) {
+        return athleteCountry;
+    }
+    return lodash_1.default.chain(competitor?.roster || [])
+        .map((entry) => lodash_1.default.get(entry, 'athlete.flag.alt', ''))
+        .compact()
+        .uniq()
+        .join('/')
+        .value();
 }
 function findRoundScoreByPeriod(linescores, period) {
     return lodash_1.default.find(linescores || [], (line) => parseInt(line?.period, 10) === period) || null;

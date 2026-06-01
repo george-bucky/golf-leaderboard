@@ -100,10 +100,22 @@ export function buildPlayerViewText(viewMode: ViewMode, favoriteCount: number): 
   return `View: ${getPlayerViewModeLabel(viewMode)}`;
 }
 
-export function buildTableData(rows: Record<string, string>[]): { headers: string[]; data: string[][] } {
-  const headers = Object.keys(rows[0] || {});
+export function buildTableData(
+  rows: Record<string, string>[],
+  options?: { headers?: string[]; columnWidths?: number[] }
+): { headers: string[]; data: string[][] } {
+  const headers = options?.headers || Object.keys(rows[0] || {});
+  const columnWidths = options?.columnWidths || [];
   return {
-    headers,
-    data: rows.map((row) => _.values(row))
+    headers: headers.map((header, index) => fitTableCell(header, columnWidths[index])),
+    data: rows.map((row) => headers.map((header, index) => fitTableCell(_.get(row, header, ''), columnWidths[index])))
   };
+}
+
+function fitTableCell(value: string, columnWidth?: number): string {
+  const text = `${value || ''}`;
+  if (!Number.isInteger(columnWidth) || (columnWidth as number) <= 0) {
+    return text;
+  }
+  return truncateText(text, columnWidth as number);
 }
